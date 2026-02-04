@@ -49,11 +49,21 @@ Return JSON only:
 
     const data = await r.json();
 
-    // ✅ If OpenAI returns an error, show a helpful reply instead of looping
-    if (!r.ok) {
-      return res.status(200).json({
-        reply: "Quick setup issue on our end. Please call 740-284-8500 or email management@pureauracleaningsolutions.com and we’ll help right away.",
-        lead: {},
+   // 🔍 TEMP: show OpenAI error message so we can diagnose
+if (!r.ok) {
+  console.log("OpenAI error:", data);
+
+  const errorMessage =
+    data?.error?.message ||
+    data?.message ||
+    JSON.stringify(data);
+
+  return res.status(200).json({
+    reply: `OpenAI setup error: ${errorMessage}`,
+    lead: {},
+  });
+}
+
       });
     }
 
