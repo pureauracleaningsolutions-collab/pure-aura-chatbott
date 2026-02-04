@@ -1,18 +1,20 @@
 export default async function handler(req, res) {
-  // ✅ CORS headers (allows your WordPress site to call Vercel)
+  // ✅ Allow your WordPress site to call this API
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  // ✅ Handle preflight request
+  // ✅ Handle preflight
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
-    if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
+    if (req.method !== "POST") {
+      return res.status(405).json({ reply: "This endpoint expects a chat message.", lead: {} });
+    }
 
     const { messages = [], page_url = "" } = req.body || {};
     if (!Array.isArray(messages) || messages.length === 0) {
-      return res.status(400).json({ error: "Missing messages" });
+      return res.status(400).json({ reply: "Hi! What type of facility is this: Office, Medical Office, Bank, Property Management, or Other?", lead: {} });
     }
 
     const system = `
@@ -28,9 +30,6 @@ city + zip, frequency, preferred cleaning time, size bucket, name, phone, email,
 Do NOT ask for sensitive medical/patient info.
 If asked for pricing, say pricing follows a walkthrough and a flat-rate proposal within 24 hours.
 
-Once you have: name + phone + email + service_type + (city or zip),
-offer booking AFTER info is collected.
-
 Return JSON only:
 { "reply": "...", "lead": { ... } }
 `;
@@ -38,7 +37,7 @@ Return JSON only:
     const r = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -49,12 +48,22 @@ Return JSON only:
     });
 
     const data = await r.json();
-    if (!r.ok) return res.status(500).json({ error: data });
+
+    // ✅ If OpenAI returns an error, show a helpful reply instead of looping
+    if (!r.ok) {
+      return res.status(200).json({
+        reply: "Quick setup issue on our end. Please call 740-284-8500 or email management@pureauracleaningsolutions.com and we’ll help right away.",
+        lead: {},
+      });
+    }
 
     const text = data.output?.[0]?.content?.[0]?.text || "{}";
     let parsed;
-    try { parsed = JSON.parse(text); }
-    catch { parsed = { reply: "Thanks—what city and ZIP is the facility in?", lead: {} }; }
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = { reply: "What city and ZIP is the facility in?", lead: {} };
+    }
 
     const lead = parsed.lead || {};
     const hasMinimum =
@@ -69,9 +78,14 @@ Return JSON only:
       });
     }
 
-    return res.status(200).json({ reply: parsed.reply || "Thanks!", lead });
-
+    return res.status(200).json({
+      reply: parsed.reply || "What city and ZIP is the facility in?",
+      lead,
+    });
   } catch (err) {
-    return res.status(500).json({ error: String(err) });
+    return res.status(200).json({
+      reply: "Quick setup issue on our end. Please call 740-284-8500 or email management@pureauracleaningsolutions.com and we’ll help right away.",
+      lead: {},
+    });
   }
 }
