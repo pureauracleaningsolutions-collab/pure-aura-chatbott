@@ -33,46 +33,39 @@ If asked for pricing, say pricing follows a walkthrough and a flat-rate proposal
 Return JSON only:
 { "reply": "...", "lead": { ... } }
 `;
+const r = await fetch("https://api.openai.com/v1/chat/completions", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    model: "gpt-4o-mini",
+    messages: [
+      { role: "system", content: system },
+      ...messages.map(m => ({ role: m.role, content: String(m.content || "") }))
+    ],
+    temperature: 0.3,
+    response_format: { type: "json_object" }
+  }),
+});
 
-    const r = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4.1-mini",
-        input: [{ role: "system", content: system }, ...messages],
-        response_format: { type: "json_object" },
-      }),
-    });
+const data = await r.json();
 
-    const data = await r.json();
-
-   // 🔍 TEMP: show OpenAI error message so we can diagnose
 if (!r.ok) {
   console.log("OpenAI error:", data);
-
-  const errorMessage =
-    data?.error?.message ||
-    data?.message ||
-    JSON.stringify(data);
-
   return res.status(200).json({
-    reply: `OpenAI setup error: ${errorMessage}`,
+    reply: `OpenAI setup error: ${data?.error?.message || JSON.stringify(data)}`,
     lead: {},
   });
 }
 
-      });
-    }
+const outText = data.choices?.[0]?.message?.content || "";
+let parsed;
+try { parsed = JSON.parse(outText); }
+catch { parsed = { reply: outText || "What city and ZIP is the facility in?", lead: {} }; }
 
-    const text = data.output?.[0]?.content?.[0]?.text || "{}";
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = { reply: "What city and ZIP is the facility in?", lead: {} };
+   
     }
 
     const lead = parsed.lead || {};
