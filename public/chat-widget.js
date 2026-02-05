@@ -109,7 +109,17 @@
       display:flex;align-items:center;justify-content:center;
       letter-spacing:.4px;
     ">
-      AI
+      <img 
+  src=https://pureaura-15xolc7fkt.live-website.com/wp-content/uploads/2026/02/ai-receptionist-photo.png
+  alt="Pure Aura Cleaning Assistant"
+  style="
+    width:100%;
+    height:100%;
+    object-fit:cover;
+    border-radius:999px;
+  "
+>
+
     </button>
   `;
 
