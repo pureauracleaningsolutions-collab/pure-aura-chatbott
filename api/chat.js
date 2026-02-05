@@ -97,12 +97,26 @@
         display:flex;
         justify-content:space-between;
         align-items:center;
-        gap:10px;
+        gap:12px;
       ">
-        <div style="display:flex;flex-direction:column;line-height:1.1;">
-          <div style="font-weight:900;font-size:14px;">${BRAND.name}</div>
-          <div id="pa-status" style="font-size:12px;opacity:.92;">${BRAND.slogan}</div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <!-- ✅ Header avatar -->
+          <img id="pa-header-avatar" src="${avatarDay}" alt="Aura" style="
+            width:36px;height:36px;border-radius:999px;
+            object-fit:cover;display:block;
+            border:2px solid rgba(255,255,255,.85);
+            box-shadow:0 6px 18px rgba(0,0,0,.20);
+          ">
+          <div style="display:flex;flex-direction:column;line-height:1.1;">
+            <div style="font-weight:900;font-size:14px;">${BRAND.name}</div>
+            <!-- ✅ Name tag line -->
+            <div id="pa-nametag" style="font-size:12px;opacity:.95;font-weight:800;">
+              ${BRAND.assistantName} • ${BRAND.name}
+            </div>
+            <div id="pa-status" style="font-size:12px;opacity:.90;">${BRAND.slogan}</div>
+          </div>
         </div>
+
         <button id="pa-close" aria-label="Close chat" style="
           background:none;border:0;color:#fff;font-size:18px;cursor:pointer;
           padding:6px 10px;border-radius:10px;
@@ -185,6 +199,7 @@
   const dot = root.querySelector("#pa-dot");
   const avatarImg = root.querySelector("#pa-avatar");
   const statusLine = root.querySelector("#pa-status");
+  const headerAvatar = root.querySelector("#pa-header-avatar");
 
   let messages = [];
   let pulseOn = true;
@@ -204,7 +219,10 @@
   function setOnlineVisuals() {
     const open = isBusinessHoursET();
     dot.style.background = open ? "#22c55e" : "#f59e0b";
-    avatarImg.src = open ? avatarDay : avatarAfterHours;
+
+    const avatarSrc = open ? avatarDay : avatarAfterHours;
+    avatarImg.src = avatarSrc;
+    if (headerAvatar) headerAvatar.src = avatarSrc;
 
     if (statusLine) {
       statusLine.textContent = open ? "🟢 Online — we can schedule now" : "🟡 After-hours — leave a message";
