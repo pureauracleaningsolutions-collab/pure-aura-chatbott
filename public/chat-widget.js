@@ -14,15 +14,19 @@
     text: "#0b1220",
   };
 
-  // 👩 AVATARS
+  // 👩 AVATARS (public URLs)
   const avatarDay =
     "https://pureaura-15xolc7fkt.live-website.com/wp-content/uploads/2026/02/ai-receptionist-photo.png";
+
   const avatarAfterHours =
     "https://pureaura-15xolc7fkt.live-website.com/wp-content/uploads/2026/02/night-shift-ai-receptionist.png";
 
   const bookingLink = "https://pureaura-15xolc7fkt.live-website.com/book-now/";
   const phone = "740-284-8500";
   const email = "management@pureauracleaningsolutions.com";
+
+  // ✅ Honeypot anti-spam (real users keep this blank)
+  const HONEYPOT_VALUE = "";
 
   // Business hours ET: Mon–Fri 8am–6pm
   function isBusinessHoursET() {
@@ -69,29 +73,21 @@
     }
   }
 
-  // ✅ Page-aware service detection (based on your URLs)
+  // ✅ Page-aware service detection (your URLs)
   function detectServiceFromPage() {
     const path = (location.pathname || "").toLowerCase();
 
-    if (path.includes("/bank-cleaning-services/")) {
-      return { key: "bank", label: "Bank Cleaning Services" };
-    }
-    if (path.includes("/medical-office-cleaning/")) {
-      return { key: "medical", label: "Medical Office Cleaning" };
-    }
-    if (path.includes("/office-cleaning-services/")) {
-      return { key: "office", label: "Office Cleaning Services" };
-    }
+    if (path.includes("/bank-cleaning-services/")) return { key: "bank", label: "Bank Cleaning Services" };
+    if (path.includes("/medical-office-cleaning/")) return { key: "medical", label: "Medical Office Cleaning" };
+    if (path.includes("/office-cleaning-services/")) return { key: "office", label: "Office Cleaning Services" };
 
-    return null; // unknown / homepage / other pages
+    return null;
   }
 
-  // ✅ GA4 helper (safe if GA is not installed)
+  // ✅ GA4 helper (safe if GA not installed)
   function gaEvent(name, params) {
     try {
-      if (typeof window.gtag === "function") {
-        window.gtag("event", name, params || {});
-      }
+      if (typeof window.gtag === "function") window.gtag("event", name, params || {});
     } catch {}
   }
 
@@ -236,9 +232,6 @@
     );
   }, 2400);
 
-  toggle.addEventListener("mouseenter", () => (toggle.style.transform = "scale(1.04)"));
-  toggle.addEventListener("mouseleave", () => (toggle.style.transform = "scale(1)"));
-
   function setOnlineVisuals() {
     const open = isBusinessHoursET();
     dot.style.background = open ? "#22c55e" : "#f59e0b";
@@ -360,7 +353,6 @@
     });
   }
 
-  // ✅ Page-aware intro logic
   function openChat() {
     pulseOn = false;
     setOnlineVisuals();
@@ -378,26 +370,22 @@
       const greet = timeGreetingET();
       const service = detectServiceFromPage();
 
-      // Inject silent context message once (not shown to the visitor)
+      // silent context
       if (service) {
         messages.push({
           role: "user",
           content: `(Context) Visitor is currently on the "${service.label}" page at ${location.href}.`,
         });
-      } else {
-        messages.push({
-          role: "user",
-          content: `(Context) Visitor is on page "${document.title || "Unknown"}" at ${location.href}.`,
-        });
-      }
-
-      if (service) {
         bubble(
           `${greet}! I’m ${BRAND.assistantName}.\nI see you’re looking for **${service.label}**.\n\nWhat city and ZIP is the facility in?`,
           "bot"
         );
         setQuick(["Pittsburgh 15205", "Crafton 15205", "Steubenville 43952", "Weirton 26062", "Other"]);
       } else {
+        messages.push({
+          role: "user",
+          content: `(Context) Visitor is on page "${document.title || "Unknown"}" at ${location.href}.`,
+        });
         bubble(
           `${greet}! I’m ${BRAND.assistantName}.\nWhat type of facility is this: Office, Medical Office, Bank, Property Management, or Other?`,
           "bot"
@@ -413,10 +401,7 @@
     const userText = String(text || "").trim();
     if (!userText) return;
 
-    gaEvent("pa_chat_message", {
-      page_location: location.href,
-      page_path: location.pathname,
-    });
+    gaEvent("pa_chat_message", { page_location: location.href, page_path: location.pathname });
 
     bubble(userText, "user");
     messages.push({ role: "user", content: userText });
@@ -433,6 +418,8 @@
           page_url: location.href,
           page_title: document.title || "",
           page_path: location.pathname || "",
+          // ✅ anti-spam honeypot (must remain blank)
+          hp: HONEYPOT_VALUE,
         }),
       });
 
@@ -456,15 +443,7 @@
       bubble(reply, "bot");
       messages.push({ role: "assistant", content: reply });
 
-      // If backend indicates lead completion, track it
-      if (Array.isArray(data.quick_replies) && data.quick_replies.includes("Book Walkthrough")) {
-        gaEvent("pa_lead_completed", {
-          page_location: location.href,
-          page_path: location.pathname,
-        });
-      }
-
-      if (data.quick_replies) setQuick(data.quick_replies);
+      if (Array.isArray(data.quick_replies)) setQuick(data.quick_replies);
     } catch (e) {
       if (tb && tb._stop) tb._stop();
       if (tb && tb.remove) tb.remove();
