@@ -1,4 +1,5 @@
-export default async function handler(req, res) {
+// Vercel Serverless Function (Node) — crash-proof CommonJS version
+module.exports = async function handler(req, res) {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -11,7 +12,17 @@ export default async function handler(req, res) {
       return res.status(200).json({ reply: "POST only", lead: {}, quick_replies: [] });
     }
 
-    const body = req.body || {};
+    // ✅ Robust body parsing (Vercel sometimes gives string / object)
+    let body = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        body = {};
+      }
+    }
+    body = body && typeof body === "object" ? body : {};
+
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const page_url = typeof body.page_url === "string" ? body.page_url : "";
     const page_title = typeof body.page_title === "string" ? body.page_title : "";
@@ -21,13 +32,15 @@ export default async function handler(req, res) {
     const phone = "740-284-8500";
     const email = "management@pureauracleaningsolutions.com";
 
-    // ✅ Your Google Apps Script Webhook (NO Make.com)
+    // ✅ Your Apps Script webhook (no Make)
     const APPS_SCRIPT_WEBHOOK_URL =
       "https://script.google.com/macros/s/AKfycbw4Dc2Amr1GxXcYeLJfmUW9MVWF4h_ng8jhJD7rNDt6gfRgo9D4bjnA6KCm8RjxRQrxew/exec";
 
+    // ✅ Required env
     if (!process.env.OPENAI_API_KEY) {
       return res.status(200).json({
-        reply: "Server setup error: OPENAI_API_KEY is missing in Vercel → Environment Variables (Production).",
+        reply:
+          "Server setup error: OPENAI_API_KEY is missing in Vercel → Settings → Environment Variables (Production). Save it, then Redeploy.",
         lead: {},
         quick_replies: [],
       });
@@ -74,7 +87,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // Quiet hours for Pushover sound control (9pm–7am ET)
     function quietHoursET() {
       try {
         const hour = Number(
@@ -105,7 +117,8 @@ export default async function handler(req, res) {
 
     function nextQuickReplies(l) {
       if (!l.service_type) return ["Office", "Medical Office", "Bank", "Property Management", "Other"];
-      if (!l.city && !l.zip) return ["Pittsburgh 15205", "Crafton 15205", "Steubenville 43952", "Weirton 26062", "Other"];
+      if (!l.city && !l.zip)
+        return ["Pittsburgh 15205", "Crafton 15205", "Steubenville 43952", "Weirton 26062", "Other"];
       if (!l.frequency) return ["One-time", "Weekly", "2–3x/week", "Nightly", "Monthly"];
       if (!l.preferred_time) return ["After-hours", "Daytime", "Weekends", "Flexible"];
       if (!l.size) return ["Small", "Medium", "Large", "Not sure"];
@@ -178,7 +191,7 @@ export default async function handler(req, res) {
       ];
 
       const subject = `Proposal Draft — ${label} (${location || "Location TBD"})`;
-      const body =
+      const bodyText =
         `Client: ${l.name || ""}\n` +
         `Service: ${label}\n` +
         `Location: ${location || "TBD"}\n` +
@@ -191,10 +204,19 @@ export default async function handler(req, res) {
         `Next Step (Walkthrough):\n${bookingLink}\n\n` +
         `Contact:\n${phone} | ${email}`;
 
-      return { subject, body, scopes, trust };
+      return { subject, body: bodyText, scopes, trust };
     }
 
-    // --- SYSTEM PROMPT ---
+    // If no messages, start
+    if (messages.length === 0) {
+      return res.status(200).json({
+        reply: "Hi! What type of facility is this: Office, Medical Office, Bank, Property Management, or Other?",
+        lead: {},
+        quick_replies: ["Office", "Medical Office", "Bank", "Property Management", "Other"],
+      });
+    }
+
+    // ✅ OpenAI system prompt (JSON output)
     const system = `
 You are the Pure Aura Cleaning Solutions website assistant.
 Primary goal: capture qualified commercial cleaning leads and then offer a walkthrough booking link.
@@ -219,31 +241,41 @@ Return JSON only:
 {"reply":"...","lead":{"service_type":"","city":"","zip":"","frequency":"","preferred_time":"","size":"","name":"","phone":"","email":"","notes":""}}
 `.trim();
 
-    const r = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: system },
-          ...messages.map((m) => ({
-            role: String(m.role || "user"),
-            content: String(m.content || ""),
-          })),
-        ],
-        temperature: 0.3,
-        response_format: { type: "json_object" },
-      }),
-    });
+    // ✅ OpenAI call (chat.completions)
+    let openai;
+    try {
+      const r = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [
+            { role: "system", content: system },
+            ...messages.map((m) => ({
+              role: String(m.role || "user"),
+              content: String(m.content || ""),
+            })),
+          ],
+          temperature: 0.3,
+          response_format: { type: "json_object" },
+        }),
+      });
 
-    const openai = await r.json();
+      openai = await r.json();
 
-    if (!r.ok) {
-      const msg = openai?.error?.message || JSON.stringify(openai);
-      return res.status(200).json({ reply: `OpenAI error: ${msg}`, lead: {}, quick_replies: [] });
+      if (!r.ok) {
+        const msg = openai?.error?.message || JSON.stringify(openai);
+        return res.status(200).json({ reply: `OpenAI error: ${msg}`, lead: {}, quick_replies: [] });
+      }
+    } catch (err) {
+      return res.status(200).json({
+        reply: "OpenAI connection failed. Please try again in a moment.",
+        lead: {},
+        quick_replies: [],
+      });
     }
 
     const outText = openai?.choices?.[0]?.message?.content || "";
@@ -259,24 +291,19 @@ Return JSON only:
     lead.page_title = page_title;
     lead.page_path = page_path;
 
+    const proposal = buildProposalDraft(lead);
+
     const hasMinimum =
-      !!lead.name &&
-      !!lead.phone &&
-      !!lead.email &&
-      !!lead.service_type &&
-      (!!lead.city || !!lead.zip);
+      !!lead.name && !!lead.phone && !!lead.email && !!lead.service_type && (!!lead.city || !!lead.zip);
 
     let replyText = parsed.reply || "What city and ZIP is the facility in?";
     let quick_replies = nextQuickReplies(lead);
-
-    // Build proposal draft (always available)
-    const proposal = buildProposalDraft(lead);
 
     if (hasMinimum) {
       const duringHours = isBusinessHoursET();
       const urgent = isUrgentLead(lead);
 
-      // ✅ Send to Google Sheets + Gmail via Apps Script webhook
+      // ✅ Send to Apps Script (never crash if it fails)
       try {
         await fetch(APPS_SCRIPT_WEBHOOK_URL, {
           method: "POST",
@@ -284,18 +311,14 @@ Return JSON only:
           body: JSON.stringify({
             lead,
             proposal,
-            meta: {
-              duringHours,
-              urgent,
-              timeBucket: timeBucketET(),
-            },
+            meta: { duringHours, urgent, timeBucket: timeBucketET() },
           }),
         });
       } catch (e) {
         console.log("Apps Script webhook error:", String(e));
       }
 
-      // Optional Pushover alert
+      // Optional Pushover
       const poUser = process.env.PUSHOVER_USER_KEY;
       const poToken = process.env.PUSHOVER_APP_TOKEN;
 
@@ -322,4 +345,43 @@ Return JSON only:
           params.append("user", poUser);
           params.append("title", urgent ? "🚨 Urgent Lead" : "✨ New Lead");
           params.append("message", msg);
-          params.append("
+          params.append("priority", priority);
+          params.append("sound", sound);
+
+          if (page_url) {
+            params.append("url", page_url);
+            params.append("url_title", "Open Page");
+          }
+
+          await fetch("https://api.pushover.net/1/messages.json", { method: "POST", body: params });
+        } catch (e) {
+          console.log("Pushover error:", String(e));
+        }
+      }
+
+      replyText =
+        `Thanks — we’ve received your information.\n\n` +
+        `Next step: a quick walkthrough so we can confirm scope and send a flat-rate proposal within 24 hours.\n\n` +
+        `✅ Book your walkthrough here:\n${bookingLink}\n\n` +
+        `${duringHours ? `✅ We’re open now — call us at ${phone} and we can schedule immediately.` : `✅ After-hours note: we’ll follow up the next business day. If urgent, call ${phone}.`}\n` +
+        `Or email: ${email}`;
+
+      quick_replies = ["Book Walkthrough", "Call Now", "Email Me"];
+    }
+
+    return res.status(200).json({
+      reply: replyText,
+      lead,
+      proposal,
+      quick_replies,
+    });
+  } catch (err) {
+    // ✅ Last-chance catch (prevents FUNCTION_INVOCATION_FAILED)
+    console.log("FATAL handler error:", err);
+    return res.status(200).json({
+      reply: "Quick setup issue on our end. Please call 740-284-8500 or email management@pureauracleaningsolutions.com.",
+      lead: {},
+      quick_replies: [],
+    });
+  }
+};
