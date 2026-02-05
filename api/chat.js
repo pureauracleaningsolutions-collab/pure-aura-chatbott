@@ -1,5 +1,5 @@
 export default async function handler(req, res) {
-  // CORS for WordPress + any site embedding
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -21,16 +21,13 @@ export default async function handler(req, res) {
     const phone = "740-284-8500";
     const email = "management@pureauracleaningsolutions.com";
 
-    // --- ENV VARS REQUIRED ---
-    // OPENAI_API_KEY
-    // Optional:
-    // LEAD_WEBHOOK_URL (Make/Zapier webhook that writes to Google Sheets + emails you)
-    // AFTER_HOURS_WEBHOOK_URL (Make/Zapier webhook that emails the customer after-hours)
-    // PUSHOVER_USER_KEY + PUSHOVER_APP_TOKEN (push alert to your phone)
+    // ✅ Your Google Apps Script Webhook (NO Make.com)
+    const APPS_SCRIPT_WEBHOOK_URL =
+      "https://script.google.com/macros/s/AKfycbw4Dc2Amr1GxXcYeLJfmUW9MVWF4h_ng8jhJD7rNDt6gfRgo9D4bjnA6KCm8RjxRQrxew/exec";
 
     if (!process.env.OPENAI_API_KEY) {
       return res.status(200).json({
-        reply: "Server setup error: OPENAI_API_KEY is missing in Vercel Environment Variables (Production).",
+        reply: "Server setup error: OPENAI_API_KEY is missing in Vercel → Environment Variables (Production).",
         lead: {},
         quick_replies: [],
       });
@@ -106,7 +103,6 @@ export default async function handler(req, res) {
       );
     }
 
-    // Quick replies based on missing info
     function nextQuickReplies(l) {
       if (!l.service_type) return ["Office", "Medical Office", "Bank", "Property Management", "Other"];
       if (!l.city && !l.zip) return ["Pittsburgh 15205", "Crafton 15205", "Steubenville 43952", "Weirton 26062", "Other"];
@@ -119,13 +115,83 @@ export default async function handler(req, res) {
       return [];
     }
 
-    // Greeting if no messages
-    if (messages.length === 0) {
-      return res.status(200).json({
-        reply: "Hi! What type of facility is this: Office, Medical Office, Bank, Property Management, or Other?",
-        lead: {},
-        quick_replies: ["Office", "Medical Office", "Bank", "Property Management", "Other"],
-      });
+    function serviceLabel(type) {
+      const t = String(type || "").toLowerCase();
+      if (t.includes("medical")) return "Medical Office Cleaning";
+      if (t.includes("bank")) return "Bank Cleaning Services";
+      if (t.includes("property")) return "Property Management Cleaning";
+      if (t.includes("office")) return "Office Cleaning Services";
+      return "Commercial Cleaning";
+    }
+
+    function buildProposalDraft(l) {
+      const label = serviceLabel(l.service_type);
+      const location = [l.city, l.zip].filter(Boolean).join(" ");
+      const freq = l.frequency || "TBD";
+      const window = l.preferred_time || "TBD";
+      const size = l.size || "TBD";
+      const notes = l.notes ? `Notes: ${l.notes}` : "";
+
+      const scopes = (() => {
+        const t = String(l.service_type || "").toLowerCase();
+        if (t.includes("bank")) {
+          return [
+            "Lobby & entry glass/doors detail-cleaned",
+            "Teller line & customer areas (surfaces, fingerprints, trash)",
+            "Restrooms sanitized & restocked",
+            "Floors: vacuum/mop + spot treatment",
+            "Secure-area awareness & discreet professional service",
+          ];
+        }
+        if (t.includes("medical")) {
+          return [
+            "High-touch disinfection (handles, switches, counters)",
+            "Exam rooms & waiting areas cleaned per protocol",
+            "Restrooms sanitized & restocked",
+            "Floors: vacuum/mop + spot treatment",
+            "Professional standards for healthcare environments",
+          ];
+        }
+        if (t.includes("property")) {
+          return [
+            "Lobbies, hallways, stairwells & common areas",
+            "Trash removal & liner replacement",
+            "Restrooms sanitized (if applicable)",
+            "Floors: vacuum/mop + spot treatment",
+            "Turnover-ready cleanup support on request",
+          ];
+        }
+        return [
+          "Trash removal & liner replacement",
+          "Dusting/wipe-down of touchpoints & ledges",
+          "Breakroom/kitchenette cleaned (counters, sinks, exterior appliances)",
+          "Restrooms sanitized & restocked",
+          "Floors: vacuum/mop + spot treatment",
+        ];
+      })();
+
+      const trust = [
+        "Insured service",
+        "Background-checked staff",
+        "Consistent checklists & quality control",
+        "After-hours options available",
+      ];
+
+      const subject = `Proposal Draft — ${label} (${location || "Location TBD"})`;
+      const body =
+        `Client: ${l.name || ""}\n` +
+        `Service: ${label}\n` +
+        `Location: ${location || "TBD"}\n` +
+        `Frequency: ${freq}\n` +
+        `Preferred Window: ${window}\n` +
+        `Size: ${size}\n` +
+        `${notes}\n\n` +
+        `Recommended Scope:\n- ${scopes.join("\n- ")}\n\n` +
+        `Compliance & Trust:\n- ${trust.join("\n- ")}\n\n` +
+        `Next Step (Walkthrough):\n${bookingLink}\n\n` +
+        `Contact:\n${phone} | ${email}`;
+
+      return { subject, body, scopes, trust };
     }
 
     // --- SYSTEM PROMPT ---
@@ -153,7 +219,6 @@ Return JSON only:
 {"reply":"...","lead":{"service_type":"","city":"","zip":"","frequency":"","preferred_time":"","size":"","name":"","phone":"","email":"","notes":""}}
 `.trim();
 
-    // --- OPENAI CALL ---
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -174,14 +239,14 @@ Return JSON only:
       }),
     });
 
-    const data = await r.json();
+    const openai = await r.json();
 
     if (!r.ok) {
-      const msg = data?.error?.message || JSON.stringify(data);
+      const msg = openai?.error?.message || JSON.stringify(openai);
       return res.status(200).json({ reply: `OpenAI error: ${msg}`, lead: {}, quick_replies: [] });
     }
 
-    const outText = data?.choices?.[0]?.message?.content || "";
+    const outText = openai?.choices?.[0]?.message?.content || "";
     let parsed;
     try {
       parsed = JSON.parse(outText);
@@ -201,149 +266,36 @@ Return JSON only:
       !!lead.service_type &&
       (!!lead.city || !!lead.zip);
 
-    function serviceLabel(type) {
-      const t = String(type || "").toLowerCase();
-      if (t.includes("medical")) return "Medical Office Cleaning";
-      if (t.includes("bank")) return "Bank Cleaning Services";
-      if (t.includes("property")) return "Property Management Cleaning";
-      if (t.includes("office")) return "Office Cleaning Services";
-      return "Commercial Cleaning";
-    }
-
-    // --- PROPOSAL DRAFT (NO EXTRA AI COST) ---
-    function buildProposalDraft(l) {
-      const label = serviceLabel(l.service_type);
-      const location = [l.city, l.zip].filter(Boolean).join(" ");
-      const freq = l.frequency || "TBD";
-      const window = l.preferred_time || "TBD";
-      const size = l.size || "TBD";
-      const notes = l.notes ? `Notes: ${l.notes}` : "";
-
-      // Scopes by service
-      const scopes = (() => {
-        const t = String(l.service_type || "").toLowerCase();
-        if (t.includes("bank")) {
-          return [
-            "Lobby & entry glass/doors detail-cleaned",
-            "Teller line & customer areas (surfaces, fingerprints, trash)",
-            "Restrooms sanitized & restocked",
-            "Floors: vacuum/mop + spot treatment",
-            "Secure-area awareness & professional, discreet service",
-          ];
-        }
-        if (t.includes("medical")) {
-          return [
-            "High-touch disinfection (door handles, switches, counters)",
-            "Exam rooms & waiting areas cleaned per protocol",
-            "Restrooms sanitized & restocked",
-            "Floors: vacuum/mop + spot treatment",
-            "Professional standards for healthcare environments",
-          ];
-        }
-        if (t.includes("property")) {
-          return [
-            "Lobbies, hallways, stairwells & common areas",
-            "Trash removal & liner replacement",
-            "Restrooms sanitized (if applicable)",
-            "Floors: vacuum/mop + spot treatment",
-            "Turnover-ready cleanup support on request",
-          ];
-        }
-        // office default
-        return [
-          "Trash removal & liner replacement",
-          "Dusting/wipe-down of desks (clear surfaces), ledges, and touchpoints",
-          "Breakroom/kitchenette cleaned (counters, sinks, exterior appliances)",
-          "Restrooms sanitized & restocked",
-          "Floors: vacuum/mop + spot treatment",
-        ];
-      })();
-
-      const trust = [
-        "Insured service",
-        "Background-checked staff",
-        "Consistent checklists & quality control",
-        "After-hours options available",
-      ];
-
-      const subject = `Proposal Draft — ${label} (${location || "Location TBD"})`;
-      const body =
-        `Client: ${l.name || ""}\n` +
-        `Service: ${label}\n` +
-        `Location: ${location || "TBD"}\n` +
-        `Frequency: ${freq}\n` +
-        `Preferred Window: ${window}\n` +
-        `Size: ${size}\n` +
-        `${notes}\n\n` +
-        `Recommended Scope (bullet points):\n- ${scopes.join("\n- ")}\n\n` +
-        `Compliance & Trust:\n- ${trust.join("\n- ")}\n\n` +
-        `Next Step (Walkthrough):\n${bookingLink}\n\n` +
-        `Contact:\n${phone} | ${email}`;
-
-      return { subject, body, scopes, trust };
-    }
-
-    const proposal = buildProposalDraft(lead);
-
-    // --- FRONTEND REPLY ---
     let replyText = parsed.reply || "What city and ZIP is the facility in?";
     let quick_replies = nextQuickReplies(lead);
+
+    // Build proposal draft (always available)
+    const proposal = buildProposalDraft(lead);
 
     if (hasMinimum) {
       const duringHours = isBusinessHoursET();
       const urgent = isUrgentLead(lead);
 
-      // Send lead to Google Sheets + internal email (Make/Zapier)
-      if (process.env.LEAD_WEBHOOK_URL) {
-        try {
-          await fetch(process.env.LEAD_WEBHOOK_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              lead,
-              proposal,
-              meta: {
-                duringHours,
-                urgent,
-                timeBucket: timeBucketET(),
-              },
-            }),
-          });
-        } catch (e) {
-          console.log("LEAD_WEBHOOK_URL error:", String(e));
-        }
+      // ✅ Send to Google Sheets + Gmail via Apps Script webhook
+      try {
+        await fetch(APPS_SCRIPT_WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lead,
+            proposal,
+            meta: {
+              duringHours,
+              urgent,
+              timeBucket: timeBucketET(),
+            },
+          }),
+        });
+      } catch (e) {
+        console.log("Apps Script webhook error:", String(e));
       }
 
-      // After-hours customer auto-follow-up trigger (Make/Zapier)
-      // Your Make scenario should send an email to lead.email using the proposal.subject/body.
-      if (!duringHours && process.env.AFTER_HOURS_WEBHOOK_URL) {
-        try {
-          await fetch(process.env.AFTER_HOURS_WEBHOOK_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              to_email: lead.email,
-              to_name: lead.name,
-              subject:
-                `Thanks for contacting ${BRAND?.name || "Pure Aura Cleaning Solutions"} — we’ll follow up next business day`,
-              // A simple, professional follow-up
-              message:
-                `Hi ${lead.name || ""},\n\n` +
-                `Thanks for reaching out to Pure Aura Cleaning Solutions. We received your request for ${serviceLabel(lead.service_type)}.\n\n` +
-                `We’re currently after-hours, but we’ll follow up the next business day to confirm details and schedule a quick walkthrough.\n\n` +
-                `If you’d like to book now, you can use this link:\n${bookingLink}\n\n` +
-                `If it’s urgent, call us at ${phone}.\n\n` +
-                `— Pure Aura Cleaning Solutions\n${email}`,
-              lead,
-              proposal,
-            }),
-          });
-        } catch (e) {
-          console.log("AFTER_HOURS_WEBHOOK_URL error:", String(e));
-        }
-      }
-
-      // Pushover alert
+      // Optional Pushover alert
       const poUser = process.env.PUSHOVER_USER_KEY;
       const poToken = process.env.PUSHOVER_APP_TOKEN;
 
@@ -370,45 +322,4 @@ Return JSON only:
           params.append("user", poUser);
           params.append("title", urgent ? "🚨 Urgent Lead" : "✨ New Lead");
           params.append("message", msg);
-          params.append("priority", priority);
-          params.append("sound", sound);
-
-          if (page_url) {
-            params.append("url", page_url);
-            params.append("url_title", "Open Page");
-          }
-
-          await fetch("https://api.pushover.net/1/messages.json", {
-            method: "POST",
-            body: params,
-          });
-        } catch (e) {
-          console.log("Pushover error:", String(e));
-        }
-      }
-
-      // Customer-facing closeout message
-      replyText =
-        `Thanks — we’ve received your information.\n\n` +
-        `Next step: a quick walkthrough so we can confirm scope and send a flat-rate proposal within 24 hours.\n\n` +
-        `✅ Book your walkthrough here:\n${bookingLink}\n\n` +
-        `${duringHours ? `✅ We’re open now — call us at ${phone} and we can schedule immediately.` : `✅ After-hours note: we’ll follow up the next business day. If urgent, call ${phone}.`}\n` +
-        `Or email: ${email}`;
-
-      quick_replies = ["Book Walkthrough", "Call Now", "Email Me"];
-    }
-
-    return res.status(200).json({
-      reply: replyText,
-      lead,
-      proposal, // included for debugging / optional use
-      quick_replies,
-    });
-  } catch (err) {
-    return res.status(200).json({
-      reply: `Server crash caught: ${String(err)}`,
-      lead: {},
-      quick_replies: [],
-    });
-  }
-}
+          params.append("
