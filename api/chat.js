@@ -1,494 +1,414 @@
-(function () {
-  const backend = "https://pure-aura-chatbott.vercel.app/api/chat";
+export default async function handler(req, res) {
+  // CORS for WordPress + any site embedding
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  // 🔵 BRAND SETTINGS
-  const BRAND = {
-    name: "Pure Aura Cleaning Solutions",
-    slogan: "Elevate Your Environment",
-    assistantName: "Aura",
-    primary: "#0b3a6a",
-    softBg: "#f6f9fc",
-    cardBg: "#ffffff",
-    botBg: "#eef3f8",
-    border: "#d9e2ec",
-    text: "#0b1220",
-  };
+  if (req.method === "OPTIONS") return res.status(200).end();
 
-  // 👩 AVATARS
-  const avatarDay =
-    "https://pureaura-15xolc7fkt.live-website.com/wp-content/uploads/2026/02/ai-receptionist-photo.png";
-  const avatarAfterHours =
-    "https://pureaura-15xolc7fkt.live-website.com/wp-content/uploads/2026/02/night-shift-ai-receptionist.png";
-
-  const bookingLink = "https://pureaura-15xolc7fkt.live-website.com/book-now/";
-  const phone = "740-284-8500";
-  const email = "management@pureauracleaningsolutions.com";
-
-  // Business hours ET: Mon–Fri 8am–6pm
-  function isBusinessHoursET() {
-    try {
-      const now = new Date();
-      const weekday = new Intl.DateTimeFormat("en-US", {
-        timeZone: "America/New_York",
-        weekday: "short",
-      }).format(now);
-
-      const hour = Number(
-        new Intl.DateTimeFormat("en-US", {
-          timeZone: "America/New_York",
-          hour: "2-digit",
-          hour12: false,
-        }).format(now)
-      );
-
-      const isWeekday = ["Mon", "Tue", "Wed", "Thu", "Fri"].includes(weekday);
-      return isWeekday && hour >= 8 && hour < 18;
-    } catch {
-      return true;
-    }
-  }
-
-  function timeGreetingET() {
-    try {
-      const hr = Number(
-        new Intl.DateTimeFormat("en-US", {
-          timeZone: "America/New_York",
-          hour: "2-digit",
-          hour12: false,
-        }).format(new Date())
-      );
-
-      if (hr < 12) return "Good morning";
-      if (hr < 18) return "Good afternoon";
-      return "Good evening";
-    } catch {
-      const hr = new Date().getHours();
-      if (hr < 12) return "Good morning";
-      if (hr < 18) return "Good afternoon";
-      return "Good evening";
-    }
-  }
-
-  // ✅ Page-aware service detection (based on your URLs)
-  function detectServiceFromPage() {
-    const path = (location.pathname || "").toLowerCase();
-
-    if (path.includes("/bank-cleaning-services/")) {
-      return { key: "bank", label: "Bank Cleaning Services" };
-    }
-    if (path.includes("/medical-office-cleaning/")) {
-      return { key: "medical", label: "Medical Office Cleaning" };
-    }
-    if (path.includes("/office-cleaning-services/")) {
-      return { key: "office", label: "Office Cleaning Services" };
+  try {
+    if (req.method !== "POST") {
+      return res.status(200).json({ reply: "POST only", lead: {}, quick_replies: [] });
     }
 
-    return null; // unknown / homepage / other pages
-  }
+    const body = req.body || {};
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const page_url = typeof body.page_url === "string" ? body.page_url : "";
+    const page_title = typeof body.page_title === "string" ? body.page_title : "";
+    const page_path = typeof body.page_path === "string" ? body.page_path : "";
 
-  // ✅ GA4 helper (safe if GA is not installed)
-  function gaEvent(name, params) {
-    try {
-      if (typeof window.gtag === "function") {
-        window.gtag("event", name, params || {});
-      }
-    } catch {}
-  }
+    const bookingLink = "https://pureaura-15xolc7fkt.live-website.com/book-now/";
+    const phone = "740-284-8500";
+    const email = "management@pureauracleaningsolutions.com";
 
-  // ---- UI ----
-  const root = document.createElement("div");
-  root.id = "pureaura-chat";
-  root.style.position = "fixed";
-  root.style.right = "20px";
-  root.style.bottom = "20px";
-  root.style.zIndex = "99999";
-  root.style.width = "390px";
-  root.style.maxWidth = "92vw";
-  root.style.fontFamily = "system-ui,-apple-system,Segoe UI,Roboto,Arial";
+    // --- ENV VARS REQUIRED ---
+    // OPENAI_API_KEY
+    // Optional:
+    // LEAD_WEBHOOK_URL (Make/Zapier webhook that writes to Google Sheets + emails you)
+    // AFTER_HOURS_WEBHOOK_URL (Make/Zapier webhook that emails the customer after-hours)
+    // PUSHOVER_USER_KEY + PUSHOVER_APP_TOKEN (push alert to your phone)
 
-  root.innerHTML = `
-    <div id="pa-box" style="
-      display:none;
-      background:${BRAND.cardBg};
-      border:1px solid ${BRAND.border};
-      border-radius:18px;
-      box-shadow:0 14px 40px rgba(0,0,0,.16);
-      overflow:hidden;
-    ">
-      <div style="
-        padding:12px 14px;
-        background:${BRAND.primary};
-        color:#fff;
-        display:flex;
-        justify-content:space-between;
-        align-items:center;
-        gap:12px;
-      ">
-        <div style="display:flex;align-items:center;gap:10px;">
-          <img id="pa-header-avatar" src="${avatarDay}" alt="Aura" style="
-            width:36px;height:36px;border-radius:999px;
-            object-fit:cover;display:block;
-            border:2px solid rgba(255,255,255,.85);
-            box-shadow:0 6px 18px rgba(0,0,0,.20);
-          ">
-          <div style="display:flex;flex-direction:column;line-height:1.1;">
-            <div style="font-weight:900;font-size:14px;">${BRAND.name}</div>
-            <div style="font-size:12px;opacity:.95;font-weight:800;">
-              ${BRAND.assistantName} • ${BRAND.name}
-            </div>
-            <div id="pa-status" style="font-size:12px;opacity:.90;">${BRAND.slogan}</div>
-          </div>
-        </div>
-
-        <button id="pa-close" aria-label="Close chat" style="
-          background:none;border:0;color:#fff;font-size:18px;cursor:pointer;
-          padding:6px 10px;border-radius:10px;
-        ">×</button>
-      </div>
-
-      <div id="pa-log" style="
-        height:340px;
-        overflow:auto;
-        padding:12px;
-        display:flex;
-        flex-direction:column;
-        gap:10px;
-        background:${BRAND.softBg};
-      "></div>
-
-      <div id="pa-quick" style="
-        padding:0 12px 12px;
-        display:flex;
-        flex-wrap:wrap;
-        gap:8px;
-        background:${BRAND.softBg};
-      "></div>
-
-      <div style="
-        display:flex;gap:8px;padding:10px;
-        border-top:1px solid ${BRAND.border};
-        background:${BRAND.cardBg};
-      ">
-        <input id="pa-in" placeholder="Type here…" style="
-          flex:1;
-          padding:10px 12px;
-          border-radius:12px;
-          border:1px solid ${BRAND.border};
-          outline:none;
-        ">
-        <button id="pa-send" style="
-          background:${BRAND.primary};
-          color:#fff;
-          border:0;
-          border-radius:12px;
-          padding:10px 14px;
-          font-weight:900;
-          cursor:pointer;
-        ">Send</button>
-      </div>
-    </div>
-
-    <button id="pa-toggle" aria-label="Open chat" title="Chat with us" style="
-      width:60px;height:60px;border-radius:999px;border:0;
-      background:${BRAND.primary};
-      box-shadow:0 14px 30px rgba(0,0,0,.20);
-      cursor:pointer;padding:0;overflow:hidden;
-      position:relative;
-      transform: translateZ(0);
-    ">
-      <img id="pa-avatar" src="${avatarDay}" alt="Pure Aura Assistant" style="
-        width:100%;height:100%;
-        object-fit:cover;
-        display:block;
-      ">
-      <span id="pa-dot" style="
-        position:absolute;right:6px;bottom:6px;
-        width:12px;height:12px;border-radius:999px;
-        background:#22c55e;border:2px solid #fff;
-        box-shadow:0 2px 8px rgba(0,0,0,.25);
-      "></span>
-    </button>
-  `;
-
-  document.body.appendChild(root);
-
-  const box = root.querySelector("#pa-box");
-  const toggle = root.querySelector("#pa-toggle");
-  const closeBtn = root.querySelector("#pa-close");
-  const log = root.querySelector("#pa-log");
-  const quick = root.querySelector("#pa-quick");
-  const input = root.querySelector("#pa-in");
-  const send = root.querySelector("#pa-send");
-  const dot = root.querySelector("#pa-dot");
-  const avatarImg = root.querySelector("#pa-avatar");
-  const headerAvatar = root.querySelector("#pa-header-avatar");
-  const statusLine = root.querySelector("#pa-status");
-
-  let messages = [];
-  let pulseOn = true;
-
-  // Gentle pulse (stops after opening once)
-  setInterval(() => {
-    if (!pulseOn) return;
-    toggle.animate(
-      [{ transform: "scale(1)" }, { transform: "scale(1.06)" }, { transform: "scale(1)" }],
-      { duration: 1400, iterations: 1 }
-    );
-  }, 2400);
-
-  toggle.addEventListener("mouseenter", () => (toggle.style.transform = "scale(1.04)"));
-  toggle.addEventListener("mouseleave", () => (toggle.style.transform = "scale(1)"));
-
-  function setOnlineVisuals() {
-    const open = isBusinessHoursET();
-    dot.style.background = open ? "#22c55e" : "#f59e0b";
-
-    const src = open ? avatarDay : avatarAfterHours;
-    avatarImg.src = src;
-    if (headerAvatar) headerAvatar.src = src;
-
-    if (statusLine) {
-      statusLine.textContent = open ? "🟢 Online — we can schedule now" : "🟡 After-hours — leave a message";
-    }
-  }
-
-  setOnlineVisuals();
-  setInterval(setOnlineVisuals, 5 * 60 * 1000);
-
-  function escapeHtml(s) {
-    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  }
-
-  function renderRich(text) {
-    return escapeHtml(text)
-      .replace(/\n/g, "<br>")
-      .replace(
-        /(https?:\/\/[^\s<]+)/g,
-        `<a href="$1" target="_blank" rel="noopener noreferrer" style="color:${BRAND.primary};text-decoration:underline;font-weight:900;">$1</a>`
-      );
-  }
-
-  function bubble(text, who) {
-    const b = document.createElement("div");
-    b.style.maxWidth = "92%";
-    b.style.padding = "10px 12px";
-    b.style.borderRadius = "14px";
-    b.style.background = who === "bot" ? BRAND.botBg : BRAND.primary;
-    b.style.color = who === "bot" ? BRAND.text : "#fff";
-    b.style.alignSelf = who === "bot" ? "flex-start" : "flex-end";
-    b.style.wordBreak = "break-word";
-    b.style.border = who === "bot" ? `1px solid ${BRAND.border}` : "0";
-    b.innerHTML = renderRich(String(text));
-    log.appendChild(b);
-    log.scrollTop = log.scrollHeight;
-    return b;
-  }
-
-  function typingBubble() {
-    const b = document.createElement("div");
-    b.style.maxWidth = "60%";
-    b.style.padding = "10px 12px";
-    b.style.borderRadius = "14px";
-    b.style.background = BRAND.botBg;
-    b.style.color = BRAND.text;
-    b.style.alignSelf = "flex-start";
-    b.style.border = `1px solid ${BRAND.border}`;
-
-    const label = document.createElement("span");
-    label.textContent = `${BRAND.assistantName} is typing`;
-    label.style.fontWeight = "800";
-
-    const dots = document.createElement("span");
-    dots.textContent = "";
-    dots.style.marginLeft = "6px";
-    dots.style.fontWeight = "900";
-
-    b.appendChild(label);
-    b.appendChild(dots);
-
-    let i = 0;
-    const t = setInterval(() => {
-      i = (i + 1) % 4;
-      dots.textContent = ".".repeat(i);
-    }, 350);
-
-    b._stop = () => clearInterval(t);
-
-    log.appendChild(b);
-    log.scrollTop = log.scrollHeight;
-    return b;
-  }
-
-  function setQuick(items) {
-    quick.innerHTML = "";
-    if (!Array.isArray(items) || items.length === 0) return;
-
-    items.forEach((label) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = label;
-
-      btn.style.border = `1px solid ${BRAND.border}`;
-      btn.style.borderRadius = "999px";
-      btn.style.padding = "8px 10px";
-      btn.style.cursor = "pointer";
-      btn.style.fontWeight = "900";
-      btn.style.background = "#fff";
-
-      btn.onmouseenter = () => (btn.style.borderColor = BRAND.primary);
-      btn.onmouseleave = () => (btn.style.borderColor = BRAND.border);
-
-      btn.onclick = () => {
-        if (label === "Book Walkthrough") {
-          window.open(bookingLink, "_blank", "noopener,noreferrer");
-          return;
-        }
-        if (label === "Call Now") {
-          window.location.href = `tel:${phone}`;
-          return;
-        }
-        if (label === "Email Me") {
-          window.location.href =
-            `mailto:${email}?subject=` +
-            encodeURIComponent("Commercial Cleaning Inquiry - Pure Aura Cleaning Solutions");
-          return;
-        }
-        ask(label);
-      };
-
-      quick.appendChild(btn);
-    });
-  }
-
-  // ✅ Page-aware intro logic
-  function openChat() {
-    pulseOn = false;
-    setOnlineVisuals();
-
-    box.style.display = "block";
-    toggle.style.display = "none";
-
-    gaEvent("pa_chat_open", {
-      page_location: location.href,
-      page_path: location.pathname,
-      page_title: document.title || "",
-    });
-
-    if (!log.children.length) {
-      const greet = timeGreetingET();
-      const service = detectServiceFromPage();
-
-      // Inject silent context message once (not shown to the visitor)
-      if (service) {
-        messages.push({
-          role: "user",
-          content: `(Context) Visitor is currently on the "${service.label}" page at ${location.href}.`,
-        });
-      } else {
-        messages.push({
-          role: "user",
-          content: `(Context) Visitor is on page "${document.title || "Unknown"}" at ${location.href}.`,
-        });
-      }
-
-      if (service) {
-        bubble(
-          `${greet}! I’m ${BRAND.assistantName}.\nI see you’re looking for **${service.label}**.\n\nWhat city and ZIP is the facility in?`,
-          "bot"
-        );
-        setQuick(["Pittsburgh 15205", "Crafton 15205", "Steubenville 43952", "Weirton 26062", "Other"]);
-      } else {
-        bubble(
-          `${greet}! I’m ${BRAND.assistantName}.\nWhat type of facility is this: Office, Medical Office, Bank, Property Management, or Other?`,
-          "bot"
-        );
-        setQuick(["Office", "Medical Office", "Bank", "Property Management", "Other"]);
-      }
-    }
-
-    input.focus();
-  }
-
-  async function ask(text) {
-    const userText = String(text || "").trim();
-    if (!userText) return;
-
-    gaEvent("pa_chat_message", {
-      page_location: location.href,
-      page_path: location.pathname,
-    });
-
-    bubble(userText, "user");
-    messages.push({ role: "user", content: userText });
-    quick.innerHTML = "";
-
-    const tb = typingBubble();
-
-    try {
-      const r = await fetch(backend, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages,
-          page_url: location.href,
-          page_title: document.title || "",
-          page_path: location.pathname || "",
-        }),
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(200).json({
+        reply: "Server setup error: OPENAI_API_KEY is missing in Vercel Environment Variables (Production).",
+        lead: {},
+        quick_replies: [],
       });
-
-      const raw = await r.text();
-      let data;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        data = { reply: raw };
-      }
-
-      if (tb && tb._stop) tb._stop();
-      if (tb && tb.remove) tb.remove();
-
-      if (!r.ok) {
-        bubble(`Quick setup issue. Please call ${phone} or email ${email}.`, "bot");
-        return;
-      }
-
-      const reply = data.reply || "What city and ZIP is the facility in?";
-      bubble(reply, "bot");
-      messages.push({ role: "assistant", content: reply });
-
-      // If backend indicates lead completion, track it
-      if (Array.isArray(data.quick_replies) && data.quick_replies.includes("Book Walkthrough")) {
-        gaEvent("pa_lead_completed", {
-          page_location: location.href,
-          page_path: location.pathname,
-        });
-      }
-
-      if (data.quick_replies) setQuick(data.quick_replies);
-    } catch (e) {
-      if (tb && tb._stop) tb._stop();
-      if (tb && tb.remove) tb.remove();
-      bubble(`Connection issue. Please call ${phone} or email ${email}.`, "bot");
     }
+
+    // Business hours ET: Mon–Fri 8am–6pm
+    function isBusinessHoursET() {
+      try {
+        const now = new Date();
+        const weekday = new Intl.DateTimeFormat("en-US", {
+          timeZone: "America/New_York",
+          weekday: "short",
+        }).format(now);
+
+        const hour = Number(
+          new Intl.DateTimeFormat("en-US", {
+            timeZone: "America/New_York",
+            hour: "2-digit",
+            hour12: false,
+          }).format(now)
+        );
+
+        const isWeekday = ["Mon", "Tue", "Wed", "Thu", "Fri"].includes(weekday);
+        return isWeekday && hour >= 8 && hour < 18;
+      } catch {
+        return true;
+      }
+    }
+
+    function timeBucketET() {
+      try {
+        const hr = Number(
+          new Intl.DateTimeFormat("en-US", {
+            timeZone: "America/New_York",
+            hour: "2-digit",
+            hour12: false,
+          }).format(new Date())
+        );
+        if (hr < 12) return "morning";
+        if (hr < 18) return "afternoon";
+        return "evening";
+      } catch {
+        return "day";
+      }
+    }
+
+    // Quiet hours for Pushover sound control (9pm–7am ET)
+    function quietHoursET() {
+      try {
+        const hour = Number(
+          new Intl.DateTimeFormat("en-US", {
+            timeZone: "America/New_York",
+            hour: "2-digit",
+            hour12: false,
+          }).format(new Date())
+        );
+        return hour >= 21 || hour < 7;
+      } catch {
+        return false;
+      }
+    }
+
+    function isUrgentLead(l) {
+      const text = [l.frequency, l.preferred_time, l.notes].join(" ").toLowerCase();
+      return (
+        text.includes("urgent") ||
+        text.includes("asap") ||
+        text.includes("today") ||
+        text.includes("tonight") ||
+        text.includes("emergency") ||
+        text.includes("same day") ||
+        text.includes("same-day")
+      );
+    }
+
+    // Quick replies based on missing info
+    function nextQuickReplies(l) {
+      if (!l.service_type) return ["Office", "Medical Office", "Bank", "Property Management", "Other"];
+      if (!l.city && !l.zip) return ["Pittsburgh 15205", "Crafton 15205", "Steubenville 43952", "Weirton 26062", "Other"];
+      if (!l.frequency) return ["One-time", "Weekly", "2–3x/week", "Nightly", "Monthly"];
+      if (!l.preferred_time) return ["After-hours", "Daytime", "Weekends", "Flexible"];
+      if (!l.size) return ["Small", "Medium", "Large", "Not sure"];
+      if (!l.name) return ["(Type your name)"];
+      if (!l.phone) return ["(Type phone)"];
+      if (!l.email) return ["(Type email)"];
+      return [];
+    }
+
+    // Greeting if no messages
+    if (messages.length === 0) {
+      return res.status(200).json({
+        reply: "Hi! What type of facility is this: Office, Medical Office, Bank, Property Management, or Other?",
+        lead: {},
+        quick_replies: ["Office", "Medical Office", "Bank", "Property Management", "Other"],
+      });
+    }
+
+    // --- SYSTEM PROMPT ---
+    const system = `
+You are the Pure Aura Cleaning Solutions website assistant.
+Primary goal: capture qualified commercial cleaning leads and then offer a walkthrough booking link.
+
+Ask in this order:
+1) Facility type (Office, Medical Office, Bank, Property Management, Other)
+2) City + ZIP
+3) Frequency (one-time, weekly, 2–3x/week, nightly, monthly)
+4) Preferred cleaning window (after-hours/daytime/weekends)
+5) Size estimate (sq ft OR small/medium/large)
+6) Contact name
+7) Phone
+8) Email
+9) Notes (optional)
+
+Rules:
+- Do NOT ask for patient details or sensitive medical info.
+- If asked about pricing: explain flat-rate proposal after a walkthrough.
+- Once you have name + phone + email + service_type + (city or zip), confirm next steps and offer booking link.
+
+Return JSON only:
+{"reply":"...","lead":{"service_type":"","city":"","zip":"","frequency":"","preferred_time":"","size":"","name":"","phone":"","email":"","notes":""}}
+`.trim();
+
+    // --- OPENAI CALL ---
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: system },
+          ...messages.map((m) => ({
+            role: String(m.role || "user"),
+            content: String(m.content || ""),
+          })),
+        ],
+        temperature: 0.3,
+        response_format: { type: "json_object" },
+      }),
+    });
+
+    const data = await r.json();
+
+    if (!r.ok) {
+      const msg = data?.error?.message || JSON.stringify(data);
+      return res.status(200).json({ reply: `OpenAI error: ${msg}`, lead: {}, quick_replies: [] });
+    }
+
+    const outText = data?.choices?.[0]?.message?.content || "";
+    let parsed;
+    try {
+      parsed = JSON.parse(outText);
+    } catch {
+      parsed = { reply: outText || "What city and ZIP is the facility in?", lead: {} };
+    }
+
+    const lead = parsed.lead || {};
+    lead.page_url = page_url;
+    lead.page_title = page_title;
+    lead.page_path = page_path;
+
+    const hasMinimum =
+      !!lead.name &&
+      !!lead.phone &&
+      !!lead.email &&
+      !!lead.service_type &&
+      (!!lead.city || !!lead.zip);
+
+    function serviceLabel(type) {
+      const t = String(type || "").toLowerCase();
+      if (t.includes("medical")) return "Medical Office Cleaning";
+      if (t.includes("bank")) return "Bank Cleaning Services";
+      if (t.includes("property")) return "Property Management Cleaning";
+      if (t.includes("office")) return "Office Cleaning Services";
+      return "Commercial Cleaning";
+    }
+
+    // --- PROPOSAL DRAFT (NO EXTRA AI COST) ---
+    function buildProposalDraft(l) {
+      const label = serviceLabel(l.service_type);
+      const location = [l.city, l.zip].filter(Boolean).join(" ");
+      const freq = l.frequency || "TBD";
+      const window = l.preferred_time || "TBD";
+      const size = l.size || "TBD";
+      const notes = l.notes ? `Notes: ${l.notes}` : "";
+
+      // Scopes by service
+      const scopes = (() => {
+        const t = String(l.service_type || "").toLowerCase();
+        if (t.includes("bank")) {
+          return [
+            "Lobby & entry glass/doors detail-cleaned",
+            "Teller line & customer areas (surfaces, fingerprints, trash)",
+            "Restrooms sanitized & restocked",
+            "Floors: vacuum/mop + spot treatment",
+            "Secure-area awareness & professional, discreet service",
+          ];
+        }
+        if (t.includes("medical")) {
+          return [
+            "High-touch disinfection (door handles, switches, counters)",
+            "Exam rooms & waiting areas cleaned per protocol",
+            "Restrooms sanitized & restocked",
+            "Floors: vacuum/mop + spot treatment",
+            "Professional standards for healthcare environments",
+          ];
+        }
+        if (t.includes("property")) {
+          return [
+            "Lobbies, hallways, stairwells & common areas",
+            "Trash removal & liner replacement",
+            "Restrooms sanitized (if applicable)",
+            "Floors: vacuum/mop + spot treatment",
+            "Turnover-ready cleanup support on request",
+          ];
+        }
+        // office default
+        return [
+          "Trash removal & liner replacement",
+          "Dusting/wipe-down of desks (clear surfaces), ledges, and touchpoints",
+          "Breakroom/kitchenette cleaned (counters, sinks, exterior appliances)",
+          "Restrooms sanitized & restocked",
+          "Floors: vacuum/mop + spot treatment",
+        ];
+      })();
+
+      const trust = [
+        "Insured service",
+        "Background-checked staff",
+        "Consistent checklists & quality control",
+        "After-hours options available",
+      ];
+
+      const subject = `Proposal Draft — ${label} (${location || "Location TBD"})`;
+      const body =
+        `Client: ${l.name || ""}\n` +
+        `Service: ${label}\n` +
+        `Location: ${location || "TBD"}\n` +
+        `Frequency: ${freq}\n` +
+        `Preferred Window: ${window}\n` +
+        `Size: ${size}\n` +
+        `${notes}\n\n` +
+        `Recommended Scope (bullet points):\n- ${scopes.join("\n- ")}\n\n` +
+        `Compliance & Trust:\n- ${trust.join("\n- ")}\n\n` +
+        `Next Step (Walkthrough):\n${bookingLink}\n\n` +
+        `Contact:\n${phone} | ${email}`;
+
+      return { subject, body, scopes, trust };
+    }
+
+    const proposal = buildProposalDraft(lead);
+
+    // --- FRONTEND REPLY ---
+    let replyText = parsed.reply || "What city and ZIP is the facility in?";
+    let quick_replies = nextQuickReplies(lead);
+
+    if (hasMinimum) {
+      const duringHours = isBusinessHoursET();
+      const urgent = isUrgentLead(lead);
+
+      // Send lead to Google Sheets + internal email (Make/Zapier)
+      if (process.env.LEAD_WEBHOOK_URL) {
+        try {
+          await fetch(process.env.LEAD_WEBHOOK_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              lead,
+              proposal,
+              meta: {
+                duringHours,
+                urgent,
+                timeBucket: timeBucketET(),
+              },
+            }),
+          });
+        } catch (e) {
+          console.log("LEAD_WEBHOOK_URL error:", String(e));
+        }
+      }
+
+      // After-hours customer auto-follow-up trigger (Make/Zapier)
+      // Your Make scenario should send an email to lead.email using the proposal.subject/body.
+      if (!duringHours && process.env.AFTER_HOURS_WEBHOOK_URL) {
+        try {
+          await fetch(process.env.AFTER_HOURS_WEBHOOK_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              to_email: lead.email,
+              to_name: lead.name,
+              subject:
+                `Thanks for contacting ${BRAND?.name || "Pure Aura Cleaning Solutions"} — we’ll follow up next business day`,
+              // A simple, professional follow-up
+              message:
+                `Hi ${lead.name || ""},\n\n` +
+                `Thanks for reaching out to Pure Aura Cleaning Solutions. We received your request for ${serviceLabel(lead.service_type)}.\n\n` +
+                `We’re currently after-hours, but we’ll follow up the next business day to confirm details and schedule a quick walkthrough.\n\n` +
+                `If you’d like to book now, you can use this link:\n${bookingLink}\n\n` +
+                `If it’s urgent, call us at ${phone}.\n\n` +
+                `— Pure Aura Cleaning Solutions\n${email}`,
+              lead,
+              proposal,
+            }),
+          });
+        } catch (e) {
+          console.log("AFTER_HOURS_WEBHOOK_URL error:", String(e));
+        }
+      }
+
+      // Pushover alert
+      const poUser = process.env.PUSHOVER_USER_KEY;
+      const poToken = process.env.PUSHOVER_APP_TOKEN;
+
+      if (poUser && poToken) {
+        try {
+          const priority = urgent ? "1" : "0";
+          const sound = quietHoursET() && !urgent ? "none" : "pushover";
+
+          const location = [lead.city, lead.zip].filter(Boolean).join(" ");
+          const msg =
+            `Service: ${serviceLabel(lead.service_type)}\n` +
+            `Location: ${location}\n` +
+            `Frequency: ${lead.frequency || ""}\n` +
+            `Preferred Time: ${lead.preferred_time || ""}\n` +
+            `Size: ${lead.size || ""}\n\n` +
+            `Name: ${lead.name || ""}\n` +
+            `Phone: ${lead.phone || ""}\n` +
+            `Email: ${lead.email || ""}\n\n` +
+            `Page: ${page_url || ""}\n\n` +
+            `Proposal Subject:\n${proposal.subject}`;
+
+          const params = new URLSearchParams();
+          params.append("token", poToken);
+          params.append("user", poUser);
+          params.append("title", urgent ? "🚨 Urgent Lead" : "✨ New Lead");
+          params.append("message", msg);
+          params.append("priority", priority);
+          params.append("sound", sound);
+
+          if (page_url) {
+            params.append("url", page_url);
+            params.append("url_title", "Open Page");
+          }
+
+          await fetch("https://api.pushover.net/1/messages.json", {
+            method: "POST",
+            body: params,
+          });
+        } catch (e) {
+          console.log("Pushover error:", String(e));
+        }
+      }
+
+      // Customer-facing closeout message
+      replyText =
+        `Thanks — we’ve received your information.\n\n` +
+        `Next step: a quick walkthrough so we can confirm scope and send a flat-rate proposal within 24 hours.\n\n` +
+        `✅ Book your walkthrough here:\n${bookingLink}\n\n` +
+        `${duringHours ? `✅ We’re open now — call us at ${phone} and we can schedule immediately.` : `✅ After-hours note: we’ll follow up the next business day. If urgent, call ${phone}.`}\n` +
+        `Or email: ${email}`;
+
+      quick_replies = ["Book Walkthrough", "Call Now", "Email Me"];
+    }
+
+    return res.status(200).json({
+      reply: replyText,
+      lead,
+      proposal, // included for debugging / optional use
+      quick_replies,
+    });
+  } catch (err) {
+    return res.status(200).json({
+      reply: `Server crash caught: ${String(err)}`,
+      lead: {},
+      quick_replies: [],
+    });
   }
-
-  toggle.onclick = openChat;
-
-  closeBtn.onclick = () => {
-    box.style.display = "none";
-    toggle.style.display = "block";
-    setOnlineVisuals();
-    gaEvent("pa_chat_close", { page_location: location.href, page_path: location.pathname });
-  };
-
-  send.onclick = () => {
-    const v = input.value.trim();
-    if (!v) return;
-    input.value = "";
-    ask(v);
-  };
-
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") send.click();
-  });
-})();
+}
