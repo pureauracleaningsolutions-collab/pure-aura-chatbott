@@ -7,7 +7,7 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
-    if (req.method !== "POST") return res.status(200).json({ reply: "POST only", lead: {} });
+    if (req.method !== "POST") return res.status(200).json({ reply: "POST only", lead: {}, quick_replies: [] });
 
     const body = req.body || {};
     const messages = Array.isArray(body.messages) ? body.messages : [];
@@ -25,7 +25,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // Local business hours (ET): Mon–Fri 8am–6pm
+    // Business hours ET: Mon–Fri 8am–6pm
     function isBusinessHoursET() {
       try {
         const now = new Date();
@@ -44,7 +44,20 @@ export default async function handler(req, res) {
       }
     }
 
-    // If no messages, greet + quick replies
+    // Quick replies based on missing info
+    function nextQuickReplies(l) {
+      if (!l.service_type) return ["Office", "Medical Office", "Bank", "Property Management", "Other"];
+      if (!l.city && !l.zip) return ["Pittsburgh 15205", "Steubenville 43952", "Weirton 26062", "Crafton 15205"];
+      if (!l.frequency) return ["One-time", "Weekly", "2–3x/week", "Nightly", "Monthly"];
+      if (!l.preferred_time) return ["After-hours", "Daytime", "Weekends", "Flexible"];
+      if (!l.size) return ["Small", "Medium", "Large", "Not sure"];
+      if (!l.name) return ["(Type your name)"];
+      if (!l.phone) return ["(Type phone)"];
+      if (!l.email) return ["(Type email)"];
+      return [];
+    }
+
+    // Greeting if no messages
     if (messages.length === 0) {
       return res.status(200).json({
         reply: "Hi! What type of facility is this: Office, Medical Office, Bank, Property Management, or Other?",
@@ -114,56 +127,30 @@ Return JSON only:
     }
 
     const lead = parsed.lead || {};
-
     const hasMinimum =
-      !!lead.name &&
-      !!lead.phone &&
-      !!lead.email &&
-      !!lead.service_type &&
-      (!!lead.city || !!lead.zip);
+      !!lead.name && !!lead.phone && !!lead.email &&
+      !!lead.service_type && (!!lead.city || !!lead.zip);
 
     function closeMessage(serviceType) {
       const st = String(serviceType || "").toLowerCase();
       if (st.includes("medical")) {
-        return (
-          "Thanks — we’ve received your information.\n\n" +
-          "For medical facilities, we follow detailed protocols focused on consistency, high-touch disinfection, and professional standards.\n\n"
-        );
+        return "Thanks — we’ve received your information.\n\nFor medical facilities, we follow detailed protocols focused on consistency, high-touch disinfection, and professional standards.\n\n";
       }
       if (st.includes("bank")) {
-        return (
-          "Thanks — we’ve received your information.\n\n" +
-          "For banks and financial facilities, we prioritize front-of-house presentation, secure-area awareness, and detailed floor/restroom care.\n\n"
-        );
+        return "Thanks — we’ve received your information.\n\nFor banks and financial facilities, we prioritize front-of-house presentation, secure-area awareness, and detailed floor/restroom care.\n\n";
       }
       if (st.includes("property")) {
-        return (
-          "Thanks — we’ve received your information.\n\n" +
-          "For property management, we help keep common areas, lobbies, stairwells, and turnover-ready spaces tenant-ready.\n\n"
-        );
+        return "Thanks — we’ve received your information.\n\nFor property management, we help keep common areas, lobbies, stairwells, and turnover-ready spaces tenant-ready.\n\n";
       }
       return "Thanks — we’ve received your information.\n\n";
     }
 
-    // QUICK REPLIES logic (based on what’s missing)
-    function nextQuickReplies(l) {
-      if (!l.service_type) return ["Office", "Medical Office", "Bank", "Property Management", "Other"];
-      if (!l.city && !l.zip) return ["Pittsburgh 15205", "Steubenville 43952", "Weirton 26062", "Crafton 15205"];
-      if (!l.frequency) return ["One-time", "Weekly", "2–3x/week", "Nightly", "Monthly"];
-      if (!l.preferred_time) return ["After-hours", "Daytime", "Weekends", "Flexible"];
-      if (!l.size) return ["Small", "Medium", "Large", "Not sure"];
-      if (!l.name) return ["(Type your name)"];
-      if (!l.phone) return ["(Type phone)"];
-      if (!l.email) return ["(Type email)"];
-      return [];
-    }
-
+    // Default reply & quick replies
     let replyText = parsed.reply || "What city and ZIP is the facility in?";
     let quick_replies = nextQuickReplies(lead);
 
-    // Webhook + booking + human takeover + SMS (optional)
     if (hasMinimum) {
-      // Send lead to Sheets/email webhook (safe)
+      // Send to Sheets/email webhook (safe)
       if (process.env.LEAD_WEBHOOK_URL) {
         try {
           await fetch(process.env.LEAD_WEBHOOK_URL, {
@@ -176,42 +163,89 @@ Return JSON only:
         }
       }
 
-      // Optional SMS alert via Twilio (only if env vars exist)
-      const twSid = process.env.TWILIO_ACCOUNT_SID;
-      const twTok = process.env.TWILIO_AUTH_TOKEN;
-      const twFrom = process.env.TWILIO_FROM;
-      const ownerPhone = process.env.OWNER_PHONE;
+      // 🔔 PUSHOVER ALERT (full + safe)
+      const poUser = process.env.PUSHOVER_USER_KEY;
+      const poToken = process.env.PUSHOVER_APP_TOKEN;
 
-      if (twSid && twTok && twFrom && ownerPhone) {
+      function quietHoursET() {
         try {
-          const auth = Buffer.from(`${twSid}:${twTok}`).toString("base64");
-          const smsBody =
-            `NEW LEAD (${lead.service_type || "Commercial"})\n` +
-            `${lead.city || ""} ${lead.zip || ""}\n` +
-            `Freq: ${lead.frequency || ""}, Time: ${lead.preferred_time || ""}, Size: ${lead.size || ""}\n` +
-            `Name: ${lead.name || ""}\nPhone: ${lead.phone || ""}\nEmail: ${lead.email || ""}`;
+          const hour = Number(
+            new Intl.DateTimeFormat("en-US", {
+              timeZone: "America/New_York",
+              hour: "2-digit",
+              hour12: false,
+            }).format(new Date())
+          );
+          return hour >= 21 || hour < 7; // 9pm–7am ET
+        } catch {
+          return false;
+        }
+      }
+
+      function serviceTitle(type) {
+        const t = String(type || "").toLowerCase();
+        if (t.includes("medical")) return "🩺 Medical Cleaning Lead";
+        if (t.includes("bank")) return "🏦 Bank Cleaning Lead";
+        if (t.includes("property")) return "🏢 Property Management Lead";
+        if (t.includes("office")) return "🏬 Office Cleaning Lead";
+        return "✨ New Cleaning Lead";
+      }
+
+      function isUrgentLead(l) {
+        const text = [l.frequency, l.preferred_time, l.notes].join(" ").toLowerCase();
+        return (
+          text.includes("urgent") ||
+          text.includes("asap") ||
+          text.includes("today") ||
+          text.includes("tonight") ||
+          text.includes("emergency") ||
+          text.includes("same day") ||
+          text.includes("same-day")
+        );
+      }
+
+      if (poUser && poToken) {
+        try {
+          const urgent = isUrgentLead(lead);
+          const priority = urgent ? "1" : "0";
+          const sound = quietHoursET() && !urgent ? "none" : "pushover";
+
+          const message =
+            `Service: ${lead.service_type || "Commercial"}\n` +
+            `Location: ${[lead.city, lead.zip].filter(Boolean).join(" ")}\n` +
+            `Frequency: ${lead.frequency || ""}\n` +
+            `Preferred Time: ${lead.preferred_time || ""}\n` +
+            `Size: ${lead.size || ""}\n\n` +
+            `Name: ${lead.name || ""}\n` +
+            `Phone: ${lead.phone || ""}\n` +
+            `Email: ${lead.email || ""}\n\n` +
+            `Source Page:\n${page_url || ""}`;
 
           const params = new URLSearchParams();
-          params.append("From", twFrom);
-          params.append("To", ownerPhone);
-          params.append("Body", smsBody);
+          params.append("token", poToken);
+          params.append("user", poUser);
+          params.append("title", serviceTitle(lead.service_type));
+          params.append("message", message);
+          params.append("priority", priority);
+          params.append("sound", sound);
 
-          await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twSid}/Messages.json`, {
+          if (page_url) {
+            params.append("url", page_url);
+            params.append("url_title", "View Lead Page");
+          }
+
+          await fetch("https://api.pushover.net/1/messages.json", {
             method: "POST",
-            headers: {
-              Authorization: `Basic ${auth}`,
-              "Content-Type": "application/x-www-form-urlencoded",
-            },
-            body: params.toString(),
+            body: params,
           });
-        } catch (e) {
-          console.log("Twilio SMS error:", String(e));
+        } catch (err) {
+          console.log("Pushover alert failed:", String(err));
         }
       }
 
       const duringHours = isBusinessHoursET();
       const humanLine = duringHours
-        ? `✅ We’re open now — if you’d like, call us at ${phone} and we can schedule immediately.`
+        ? `✅ We’re open now — call us at ${phone} and we can schedule immediately.`
         : `✅ After-hours note: we’ll follow up the next business day. If urgent, call ${phone}.`;
 
       replyText =
@@ -221,14 +255,10 @@ Return JSON only:
         humanLine + "\n" +
         `Or email: ${email}`;
 
-      quick_replies = ["Book Walkthrough", "Call Now", "Text Me", "Email Me"];
+      quick_replies = ["Book Walkthrough", "Call Now", "Email Me"];
     }
 
-    return res.status(200).json({
-      reply: replyText,
-      lead,
-      quick_replies,
-    });
+    return res.status(200).json({ reply: replyText, lead, quick_replies });
   } catch (err) {
     return res.status(200).json({
       reply: `Server crash caught: ${String(err)}`,
@@ -237,4 +267,3 @@ Return JSON only:
     });
   }
 }
-
