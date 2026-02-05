@@ -14,10 +14,9 @@
     text: "#0b1220",
   };
 
-  // 👩 AVATARS (public URLs)
+  // 👩 AVATARS
   const avatarDay =
     "https://pureaura-15xolc7fkt.live-website.com/wp-content/uploads/2026/02/ai-receptionist-photo.png";
-
   const avatarAfterHours =
     "https://pureaura-15xolc7fkt.live-website.com/wp-content/uploads/2026/02/night-shift-ai-receptionist.png";
 
@@ -70,6 +69,32 @@
     }
   }
 
+  // ✅ Page-aware service detection (based on your URLs)
+  function detectServiceFromPage() {
+    const path = (location.pathname || "").toLowerCase();
+
+    if (path.includes("/bank-cleaning-services/")) {
+      return { key: "bank", label: "Bank Cleaning Services" };
+    }
+    if (path.includes("/medical-office-cleaning/")) {
+      return { key: "medical", label: "Medical Office Cleaning" };
+    }
+    if (path.includes("/office-cleaning-services/")) {
+      return { key: "office", label: "Office Cleaning Services" };
+    }
+
+    return null; // unknown / homepage / other pages
+  }
+
+  // ✅ GA4 helper (safe if GA is not installed)
+  function gaEvent(name, params) {
+    try {
+      if (typeof window.gtag === "function") {
+        window.gtag("event", name, params || {});
+      }
+    } catch {}
+  }
+
   // ---- UI ----
   const root = document.createElement("div");
   root.id = "pureaura-chat";
@@ -100,7 +125,6 @@
         gap:12px;
       ">
         <div style="display:flex;align-items:center;gap:10px;">
-          <!-- ✅ Header avatar -->
           <img id="pa-header-avatar" src="${avatarDay}" alt="Aura" style="
             width:36px;height:36px;border-radius:999px;
             object-fit:cover;display:block;
@@ -109,8 +133,7 @@
           ">
           <div style="display:flex;flex-direction:column;line-height:1.1;">
             <div style="font-weight:900;font-size:14px;">${BRAND.name}</div>
-            <!-- ✅ Name tag line -->
-            <div id="pa-nametag" style="font-size:12px;opacity:.95;font-weight:800;">
+            <div style="font-size:12px;opacity:.95;font-weight:800;">
               ${BRAND.assistantName} • ${BRAND.name}
             </div>
             <div id="pa-status" style="font-size:12px;opacity:.90;">${BRAND.slogan}</div>
@@ -198,13 +221,13 @@
   const send = root.querySelector("#pa-send");
   const dot = root.querySelector("#pa-dot");
   const avatarImg = root.querySelector("#pa-avatar");
-  const statusLine = root.querySelector("#pa-status");
   const headerAvatar = root.querySelector("#pa-header-avatar");
+  const statusLine = root.querySelector("#pa-status");
 
   let messages = [];
   let pulseOn = true;
 
-  // Gentle pulse to draw attention (stops after opening once)
+  // Gentle pulse (stops after opening once)
   setInterval(() => {
     if (!pulseOn) return;
     toggle.animate(
@@ -220,9 +243,9 @@
     const open = isBusinessHoursET();
     dot.style.background = open ? "#22c55e" : "#f59e0b";
 
-    const avatarSrc = open ? avatarDay : avatarAfterHours;
-    avatarImg.src = avatarSrc;
-    if (headerAvatar) headerAvatar.src = avatarSrc;
+    const src = open ? avatarDay : avatarAfterHours;
+    avatarImg.src = src;
+    if (headerAvatar) headerAvatar.src = src;
 
     if (statusLine) {
       statusLine.textContent = open ? "🟢 Online — we can schedule now" : "🟡 After-hours — leave a message";
@@ -261,7 +284,6 @@
     return b;
   }
 
-  // Typing indicator with animated dots
   function typingBubble() {
     const b = document.createElement("div");
     b.style.maxWidth = "60%";
@@ -338,6 +360,7 @@
     });
   }
 
+  // ✅ Page-aware intro logic
   function openChat() {
     pulseOn = false;
     setOnlineVisuals();
@@ -345,13 +368,42 @@
     box.style.display = "block";
     toggle.style.display = "none";
 
+    gaEvent("pa_chat_open", {
+      page_location: location.href,
+      page_path: location.pathname,
+      page_title: document.title || "",
+    });
+
     if (!log.children.length) {
       const greet = timeGreetingET();
-      bubble(
-        `${greet}! I’m ${BRAND.assistantName}.\nWhat type of facility is this: Office, Medical Office, Bank, Property Management, or Other?`,
-        "bot"
-      );
-      setQuick(["Office", "Medical Office", "Bank", "Property Management", "Other"]);
+      const service = detectServiceFromPage();
+
+      // Inject silent context message once (not shown to the visitor)
+      if (service) {
+        messages.push({
+          role: "user",
+          content: `(Context) Visitor is currently on the "${service.label}" page at ${location.href}.`,
+        });
+      } else {
+        messages.push({
+          role: "user",
+          content: `(Context) Visitor is on page "${document.title || "Unknown"}" at ${location.href}.`,
+        });
+      }
+
+      if (service) {
+        bubble(
+          `${greet}! I’m ${BRAND.assistantName}.\nI see you’re looking for **${service.label}**.\n\nWhat city and ZIP is the facility in?`,
+          "bot"
+        );
+        setQuick(["Pittsburgh 15205", "Crafton 15205", "Steubenville 43952", "Weirton 26062", "Other"]);
+      } else {
+        bubble(
+          `${greet}! I’m ${BRAND.assistantName}.\nWhat type of facility is this: Office, Medical Office, Bank, Property Management, or Other?`,
+          "bot"
+        );
+        setQuick(["Office", "Medical Office", "Bank", "Property Management", "Other"]);
+      }
     }
 
     input.focus();
@@ -360,6 +412,11 @@
   async function ask(text) {
     const userText = String(text || "").trim();
     if (!userText) return;
+
+    gaEvent("pa_chat_message", {
+      page_location: location.href,
+      page_path: location.pathname,
+    });
 
     bubble(userText, "user");
     messages.push({ role: "user", content: userText });
@@ -371,7 +428,12 @@
       const r = await fetch(backend, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages, page_url: location.href }),
+        body: JSON.stringify({
+          messages,
+          page_url: location.href,
+          page_title: document.title || "",
+          page_path: location.pathname || "",
+        }),
       });
 
       const raw = await r.text();
@@ -394,6 +456,14 @@
       bubble(reply, "bot");
       messages.push({ role: "assistant", content: reply });
 
+      // If backend indicates lead completion, track it
+      if (Array.isArray(data.quick_replies) && data.quick_replies.includes("Book Walkthrough")) {
+        gaEvent("pa_lead_completed", {
+          page_location: location.href,
+          page_path: location.pathname,
+        });
+      }
+
       if (data.quick_replies) setQuick(data.quick_replies);
     } catch (e) {
       if (tb && tb._stop) tb._stop();
@@ -408,6 +478,7 @@
     box.style.display = "none";
     toggle.style.display = "block";
     setOnlineVisuals();
+    gaEvent("pa_chat_close", { page_location: location.href, page_path: location.pathname });
   };
 
   send.onclick = () => {
