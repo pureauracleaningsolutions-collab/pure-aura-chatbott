@@ -1,4 +1,4 @@
-// Vercel Serverless Function (Node) — crash-proof CommonJS version
+// Vercel Serverless Function (Node) — crash-proof CommonJS version + Anti-spam + Dedupe + Tagging
 module.exports = async function handler(req, res) {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -7,19 +7,67 @@ module.exports = async function handler(req, res) {
 
   if (req.method === "OPTIONS") return res.status(200).end();
 
+  // ---------- SIMPLE IN-MEMORY RATE LIMIT (per serverless instance) ----------
+  // Note: serverless may spin up multiple instances, but this still cuts spam massively.
+  global.__PA_RL = global.__PA_RL || new Map(); // ip -> {count, resetAt}
+  global.__PA_DEDUPE = global.__PA_DEDUPE || new Map(); // key -> expireAt
+
+  const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+  const RATE_LIMIT_MAX = 25; // allow normal use; blocks spam bursts
+  const DEDUPE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+
+  function getIP(req) {
+    const xf = req.headers["x-forwarded-for"];
+    if (typeof xf === "string" && xf.length) return xf.split(",")[0].trim();
+    return (req.socket && req.socket.remoteAddress) || "unknown";
+  }
+
+  function rateLimitOrOk(ip) {
+    const now = Date.now();
+    const entry = global.__PA_RL.get(ip);
+    if (!entry || now > entry.resetAt) {
+      global.__PA_RL.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+      return true;
+    }
+    entry.count += 1;
+    global.__PA_RL.set(ip, entry);
+    return entry.count <= RATE_LIMIT_MAX;
+  }
+
+  function dedupeSeen(key) {
+    const now = Date.now();
+    // cleanup a little
+    if (global.__PA_DEDUPE.size > 800) {
+      for (const [k, exp] of global.__PA_DEDUPE.entries()) {
+        if (now > exp) global.__PA_DEDUPE.delete(k);
+      }
+    }
+    const exp = global.__PA_DEDUPE.get(key);
+    if (exp && now < exp) return true;
+    global.__PA_DEDUPE.set(key, now + DEDUPE_TTL_MS);
+    return false;
+  }
+
   try {
     if (req.method !== "POST") {
       return res.status(200).json({ reply: "POST only", lead: {}, quick_replies: [] });
     }
 
-    // ✅ Robust body parsing (Vercel sometimes gives string / object)
+    const ip = getIP(req);
+
+    // If someone is hammering your endpoint, politely stop responding.
+    if (!rateLimitOrOk(ip)) {
+      return res.status(200).json({
+        reply: "Thanks! One moment — please try again shortly.",
+        lead: {},
+        quick_replies: [],
+      });
+    }
+
+    // Robust body parsing
     let body = req.body;
     if (typeof body === "string") {
-      try {
-        body = JSON.parse(body);
-      } catch {
-        body = {};
-      }
+      try { body = JSON.parse(body); } catch { body = {}; }
     }
     body = body && typeof body === "object" ? body : {};
 
@@ -28,15 +76,24 @@ module.exports = async function handler(req, res) {
     const page_title = typeof body.page_title === "string" ? body.page_title : "";
     const page_path = typeof body.page_path === "string" ? body.page_path : "";
 
+    // ✅ Honeypot field (widget will send this hidden field)
+    // If a bot fills it, we silently ignore.
+    const hp = typeof body.hp === "string" ? body.hp.trim() : "";
+    if (hp) {
+      return res.status(200).json({
+        reply: "Thanks! If you need immediate help, call 740-284-8500.",
+        lead: {},
+        quick_replies: [],
+      });
+    }
+
     const bookingLink = "https://pureaura-15xolc7fkt.live-website.com/book-now/";
     const phone = "740-284-8500";
     const email = "management@pureauracleaningsolutions.com";
 
-    // ✅ Your Apps Script webhook (no Make)
     const APPS_SCRIPT_WEBHOOK_URL =
       "https://script.google.com/macros/s/AKfycbw4Dc2Amr1GxXcYeLJfmUW9MVWF4h_ng8jhJD7rNDt6gfRgo9D4bjnA6KCm8RjxRQrxew/exec";
 
-    // ✅ Required env
     if (!process.env.OPENAI_API_KEY) {
       return res.status(200).json({
         reply:
@@ -117,8 +174,7 @@ module.exports = async function handler(req, res) {
 
     function nextQuickReplies(l) {
       if (!l.service_type) return ["Office", "Medical Office", "Bank", "Property Management", "Other"];
-      if (!l.city && !l.zip)
-        return ["Pittsburgh 15205", "Crafton 15205", "Steubenville 43952", "Weirton 26062", "Other"];
+      if (!l.city && !l.zip) return ["Pittsburgh 15205", "Crafton 15205", "Steubenville 43952", "Weirton 26062", "Other"];
       if (!l.frequency) return ["One-time", "Weekly", "2–3x/week", "Nightly", "Monthly"];
       if (!l.preferred_time) return ["After-hours", "Daytime", "Weekends", "Flexible"];
       if (!l.size) return ["Small", "Medium", "Large", "Not sure"];
@@ -128,6 +184,10 @@ module.exports = async function handler(req, res) {
       return [];
     }
 
+    function normalizePhone(p) {
+      return String(p || "").replace(/[^\d]/g, "");
+    }
+
     function serviceLabel(type) {
       const t = String(type || "").toLowerCase();
       if (t.includes("medical")) return "Medical Office Cleaning";
@@ -135,6 +195,18 @@ module.exports = async function handler(req, res) {
       if (t.includes("property")) return "Property Management Cleaning";
       if (t.includes("office")) return "Office Cleaning Services";
       return "Commercial Cleaning";
+    }
+
+    function buildTags(l) {
+      const tags = [];
+      const s = serviceLabel(l.service_type);
+      tags.push(s.toUpperCase().includes("BANK") ? "BANK" : "");
+      tags.push(s.toUpperCase().includes("MEDICAL") ? "MEDICAL" : "");
+      tags.push(s.toUpperCase().includes("OFFICE") ? "OFFICE" : "");
+      tags.push(s.toUpperCase().includes("PROPERTY") ? "PROPERTY" : "");
+      const loc = [l.city, l.zip].filter(Boolean).join(" ").trim();
+      if (loc) tags.push(loc);
+      return tags.filter(Boolean);
     }
 
     function buildProposalDraft(l) {
@@ -207,7 +279,6 @@ module.exports = async function handler(req, res) {
       return { subject, body: bodyText, scopes, trust };
     }
 
-    // If no messages, start
     if (messages.length === 0) {
       return res.status(200).json({
         reply: "Hi! What type of facility is this: Office, Medical Office, Bank, Property Management, or Other?",
@@ -216,7 +287,6 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // ✅ OpenAI system prompt (JSON output)
     const system = `
 You are the Pure Aura Cleaning Solutions website assistant.
 Primary goal: capture qualified commercial cleaning leads and then offer a walkthrough booking link.
@@ -241,7 +311,6 @@ Return JSON only:
 {"reply":"...","lead":{"service_type":"","city":"","zip":"","frequency":"","preferred_time":"","size":"","name":"","phone":"","email":"","notes":""}}
 `.trim();
 
-    // ✅ OpenAI call (chat.completions)
     let openai;
     try {
       const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -270,9 +339,9 @@ Return JSON only:
         const msg = openai?.error?.message || JSON.stringify(openai);
         return res.status(200).json({ reply: `OpenAI error: ${msg}`, lead: {}, quick_replies: [] });
       }
-    } catch (err) {
+    } catch {
       return res.status(200).json({
-        reply: "OpenAI connection failed. Please try again in a moment.",
+        reply: "Connection issue. Please try again in a moment.",
         lead: {},
         quick_replies: [],
       });
@@ -292,9 +361,14 @@ Return JSON only:
     lead.page_path = page_path;
 
     const proposal = buildProposalDraft(lead);
+    const tags = buildTags(lead);
 
     const hasMinimum =
-      !!lead.name && !!lead.phone && !!lead.email && !!lead.service_type && (!!lead.city || !!lead.zip);
+      !!lead.name &&
+      !!lead.phone &&
+      !!lead.email &&
+      !!lead.service_type &&
+      (!!lead.city || !!lead.zip);
 
     let replyText = parsed.reply || "What city and ZIP is the facility in?";
     let quick_replies = nextQuickReplies(lead);
@@ -303,59 +377,72 @@ Return JSON only:
       const duringHours = isBusinessHoursET();
       const urgent = isUrgentLead(lead);
 
-      // ✅ Send to Apps Script (never crash if it fails)
-      try {
-        await fetch(APPS_SCRIPT_WEBHOOK_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            lead,
-            proposal,
-            meta: { duringHours, urgent, timeBucket: timeBucketET() },
-          }),
-        });
-      } catch (e) {
-        console.log("Apps Script webhook error:", String(e));
-      }
+      // ✅ DEDUPE KEY: same phone/email + service + zip within 15 minutes
+      const dedupeKey = [
+        (lead.email || "").toLowerCase(),
+        normalizePhone(lead.phone),
+        (lead.service_type || "").toLowerCase(),
+        (lead.zip || "").toString(),
+      ].join("|");
 
-      // Optional Pushover
-      const poUser = process.env.PUSHOVER_USER_KEY;
-      const poToken = process.env.PUSHOVER_APP_TOKEN;
-
-      if (poUser && poToken) {
+      if (!dedupeSeen(dedupeKey)) {
+        // Send to Apps Script (never crash if it fails)
         try {
-          const priority = urgent ? "1" : "0";
-          const sound = quietHoursET() && !urgent ? "none" : "pushover";
-
-          const location = [lead.city, lead.zip].filter(Boolean).join(" ");
-          const msg =
-            `Service: ${serviceLabel(lead.service_type)}\n` +
-            `Location: ${location}\n` +
-            `Frequency: ${lead.frequency || ""}\n` +
-            `Preferred Time: ${lead.preferred_time || ""}\n` +
-            `Size: ${lead.size || ""}\n\n` +
-            `Name: ${lead.name || ""}\n` +
-            `Phone: ${lead.phone || ""}\n` +
-            `Email: ${lead.email || ""}\n\n` +
-            `Page: ${page_url || ""}\n\n` +
-            `Proposal Subject:\n${proposal.subject}`;
-
-          const params = new URLSearchParams();
-          params.append("token", poToken);
-          params.append("user", poUser);
-          params.append("title", urgent ? "🚨 Urgent Lead" : "✨ New Lead");
-          params.append("message", msg);
-          params.append("priority", priority);
-          params.append("sound", sound);
-
-          if (page_url) {
-            params.append("url", page_url);
-            params.append("url_title", "Open Page");
-          }
-
-          await fetch("https://api.pushover.net/1/messages.json", { method: "POST", body: params });
+          await fetch(APPS_SCRIPT_WEBHOOK_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              lead,
+              proposal,
+              tags,
+              dedupe_key: dedupeKey,
+              meta: { duringHours, urgent, timeBucket: timeBucketET(), ip },
+            }),
+          });
         } catch (e) {
-          console.log("Pushover error:", String(e));
+          console.log("Apps Script webhook error:", String(e));
+        }
+
+        // Optional Pushover
+        const poUser = process.env.PUSHOVER_USER_KEY;
+        const poToken = process.env.PUSHOVER_APP_TOKEN;
+
+        if (poUser && poToken) {
+          try {
+            const priority = urgent ? "1" : "0";
+            const sound = quietHoursET() && !urgent ? "none" : "pushover";
+            const location = [lead.city, lead.zip].filter(Boolean).join(" ");
+
+            const msg =
+              `Tags: ${tags.join(", ")}\n` +
+              `Service: ${serviceLabel(lead.service_type)}\n` +
+              `Location: ${location}\n` +
+              `Frequency: ${lead.frequency || ""}\n` +
+              `Preferred Time: ${lead.preferred_time || ""}\n` +
+              `Size: ${lead.size || ""}\n\n` +
+              `Name: ${lead.name || ""}\n` +
+              `Phone: ${lead.phone || ""}\n` +
+              `Email: ${lead.email || ""}\n\n` +
+              `Page: ${page_url || ""}\n\n` +
+              `Proposal Subject:\n${proposal.subject}`;
+
+            const params = new URLSearchParams();
+            params.append("token", poToken);
+            params.append("user", poUser);
+            params.append("title", urgent ? "🚨 Urgent Lead" : "✨ New Lead");
+            params.append("message", msg);
+            params.append("priority", priority);
+            params.append("sound", sound);
+
+            if (page_url) {
+              params.append("url", page_url);
+              params.append("url_title", "Open Page");
+            }
+
+            await fetch("https://api.pushover.net/1/messages.json", { method: "POST", body: params });
+          } catch (e) {
+            console.log("Pushover error:", String(e));
+          }
         }
       }
 
@@ -369,17 +456,12 @@ Return JSON only:
       quick_replies = ["Book Walkthrough", "Call Now", "Email Me"];
     }
 
-    return res.status(200).json({
-      reply: replyText,
-      lead,
-      proposal,
-      quick_replies,
-    });
+    return res.status(200).json({ reply: replyText, lead, proposal, tags, quick_replies });
   } catch (err) {
-    // ✅ Last-chance catch (prevents FUNCTION_INVOCATION_FAILED)
     console.log("FATAL handler error:", err);
     return res.status(200).json({
-      reply: "Quick setup issue on our end. Please call 740-284-8500 or email management@pureauracleaningsolutions.com.",
+      reply:
+        "Quick setup issue on our end. Please call 740-284-8500 or email management@pureauracleaningsolutions.com.",
       lead: {},
       quick_replies: [],
     });
