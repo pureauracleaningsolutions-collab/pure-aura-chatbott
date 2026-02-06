@@ -1,7 +1,6 @@
 (function () {
   const backend = "https://pure-aura-chatbott.vercel.app/api/chat";
 
-  // 🔵 BRAND SETTINGS
   const BRAND = {
     name: "Pure Aura Cleaning Solutions",
     slogan: "Elevate Your Environment",
@@ -14,7 +13,6 @@
     text: "#0b1220",
   };
 
-  // 👩 AVATARS (public URLs)
   const avatarDay =
     "https://pureaura-15xolc7fkt.live-website.com/wp-content/uploads/2026/02/ai-receptionist-photo.png";
 
@@ -25,10 +23,12 @@
   const phone = "740-284-8500";
   const email = "management@pureauracleaningsolutions.com";
 
-  // ✅ Honeypot anti-spam (real users keep this blank)
+  // ✅ Honeypot (must stay blank)
   const HONEYPOT_VALUE = "";
 
-  // Business hours ET: Mon–Fri 8am–6pm
+  // ✅ Typing recovery configuration
+  const TYPING_RECOVERY_MS = 8000;
+
   function isBusinessHoursET() {
     try {
       const now = new Date();
@@ -73,18 +73,14 @@
     }
   }
 
-  // ✅ Page-aware service detection (your URLs)
   function detectServiceFromPage() {
     const path = (location.pathname || "").toLowerCase();
-
     if (path.includes("/bank-cleaning-services/")) return { key: "bank", label: "Bank Cleaning Services" };
     if (path.includes("/medical-office-cleaning/")) return { key: "medical", label: "Medical Office Cleaning" };
     if (path.includes("/office-cleaning-services/")) return { key: "office", label: "Office Cleaning Services" };
-
     return null;
   }
 
-  // ✅ GA4 helper (safe if GA not installed)
   function gaEvent(name, params) {
     try {
       if (typeof window.gtag === "function") window.gtag("event", name, params || {});
@@ -222,8 +218,10 @@
 
   let messages = [];
   let pulseOn = true;
+  let lastUserMessage = "";
+  let inFlight = false;
 
-  // Gentle pulse (stops after opening once)
+  // Gentle pulse
   setInterval(() => {
     if (!pulseOn) return;
     toggle.animate(
@@ -332,20 +330,13 @@
       btn.onmouseleave = () => (btn.style.borderColor = BRAND.border);
 
       btn.onclick = () => {
-        if (label === "Book Walkthrough") {
-          window.open(bookingLink, "_blank", "noopener,noreferrer");
-          return;
-        }
-        if (label === "Call Now") {
-          window.location.href = `tel:${phone}`;
-          return;
-        }
-        if (label === "Email Me") {
-          window.location.href =
+        if (label === "Book Walkthrough") return window.open(bookingLink, "_blank", "noopener,noreferrer");
+        if (label === "Call Now") return (window.location.href = `tel:${phone}`);
+        if (label === "Email Me")
+          return (window.location.href =
             `mailto:${email}?subject=` +
-            encodeURIComponent("Commercial Cleaning Inquiry - Pure Aura Cleaning Solutions");
-          return;
-        }
+            encodeURIComponent("Commercial Cleaning Inquiry - Pure Aura Cleaning Solutions"));
+
         ask(label);
       };
 
@@ -360,46 +351,44 @@
     box.style.display = "block";
     toggle.style.display = "none";
 
-    gaEvent("pa_chat_open", {
-      page_location: location.href,
-      page_path: location.pathname,
-      page_title: document.title || "",
-    });
+    gaEvent("pa_chat_open", { page_location: location.href, page_path: location.pathname, page_title: document.title || "" });
 
     if (!log.children.length) {
       const greet = timeGreetingET();
       const service = detectServiceFromPage();
 
-      // silent context
       if (service) {
-        messages.push({
-          role: "user",
-          content: `(Context) Visitor is currently on the "${service.label}" page at ${location.href}.`,
-        });
-        bubble(
-          `${greet}! I’m ${BRAND.assistantName}.\nI see you’re looking for **${service.label}**.\n\nWhat city and ZIP is the facility in?`,
-          "bot"
-        );
+        messages.push({ role: "user", content: `(Context) Visitor is on "${service.label}" page at ${location.href}.` });
+        bubble(`${greet}! I’m ${BRAND.assistantName}.\nI see you’re looking for **${service.label}**.\n\nWhat city and ZIP is the facility in?`, "bot");
         setQuick(["Pittsburgh 15205", "Crafton 15205", "Steubenville 43952", "Weirton 26062", "Other"]);
       } else {
-        messages.push({
-          role: "user",
-          content: `(Context) Visitor is on page "${document.title || "Unknown"}" at ${location.href}.`,
-        });
-        bubble(
-          `${greet}! I’m ${BRAND.assistantName}.\nWhat type of facility is this: Office, Medical Office, Bank, Property Management, or Other?`,
-          "bot"
-        );
+        messages.push({ role: "user", content: `(Context) Visitor is on "${document.title || "Unknown"}" at ${location.href}.` });
+        bubble(`${greet}! I’m ${BRAND.assistantName}.\nWhat type of facility is this: Office, Medical Office, Bank, Property Management, or Other?`, "bot");
         setQuick(["Office", "Medical Office", "Bank", "Property Management", "Other"]);
       }
     }
-
     input.focus();
+  }
+
+  function addRecoveryButtons() {
+    setQuick(["Continue", "Call Now", "Email Me"]);
   }
 
   async function ask(text) {
     const userText = String(text || "").trim();
     if (!userText) return;
+
+    // Prevent double-sends
+    if (inFlight && userText === "Continue") return;
+
+    // Continue re-sends last user message (no new bubble)
+    if (userText === "Continue") {
+      if (!lastUserMessage) return bubble("Please type your last detail again.", "bot");
+      return ask(lastUserMessage);
+    }
+
+    inFlight = true;
+    lastUserMessage = userText;
 
     gaEvent("pa_chat_message", { page_location: location.href, page_path: location.pathname });
 
@@ -408,6 +397,19 @@
     quick.innerHTML = "";
 
     const tb = typingBubble();
+
+    // ✅ Typing recovery timer
+    let recovered = false;
+    const recoveryTimer = setTimeout(() => {
+      recovered = true;
+      try {
+        if (tb && tb._stop) tb._stop();
+        if (tb && tb.remove) tb.remove();
+      } catch {}
+      bubble("Still here — quick connection hiccup. Tap **Continue** or type your last detail again.", "bot");
+      addRecoveryButtons();
+      inFlight = false;
+    }, TYPING_RECOVERY_MS);
 
     try {
       const r = await fetch(backend, {
@@ -418,8 +420,7 @@
           page_url: location.href,
           page_title: document.title || "",
           page_path: location.pathname || "",
-          // ✅ anti-spam honeypot (must remain blank)
-          hp: HONEYPOT_VALUE,
+          hp: HONEYPOT_VALUE, // must stay blank
         }),
       });
 
@@ -428,26 +429,50 @@
       try {
         data = JSON.parse(raw);
       } catch {
-        data = { reply: raw };
+        data = {};
       }
 
-      if (tb && tb._stop) tb._stop();
-      if (tb && tb.remove) tb.remove();
+      // ✅ Safety fallbacks
+      if (!data || typeof data !== "object") data = {};
+      if (!data.reply || typeof data.reply !== "string") data.reply = "Thanks — please continue.";
+      if (!Array.isArray(data.quick_replies)) data.quick_replies = [];
+
+      // If recovery already fired, we still accept the response but avoid duplicate messaging
+      if (recovered) return;
+
+      clearTimeout(recoveryTimer);
+
+      // Always remove typing bubble
+      try {
+        if (tb && tb._stop) tb._stop();
+        if (tb && tb.remove) tb.remove();
+      } catch {}
 
       if (!r.ok) {
         bubble(`Quick setup issue. Please call ${phone} or email ${email}.`, "bot");
+        addRecoveryButtons();
+        inFlight = false;
         return;
       }
 
-      const reply = data.reply || "What city and ZIP is the facility in?";
-      bubble(reply, "bot");
-      messages.push({ role: "assistant", content: reply });
+      bubble(data.reply, "bot");
+      messages.push({ role: "assistant", content: data.reply });
 
-      if (Array.isArray(data.quick_replies)) setQuick(data.quick_replies);
+      setQuick(data.quick_replies);
+      inFlight = false;
     } catch (e) {
-      if (tb && tb._stop) tb._stop();
-      if (tb && tb.remove) tb.remove();
-      bubble(`Connection issue. Please call ${phone} or email ${email}.`, "bot");
+      if (recovered) return;
+
+      clearTimeout(recoveryTimer);
+
+      try {
+        if (tb && tb._stop) tb._stop();
+        if (tb && tb.remove) tb.remove();
+      } catch {}
+
+      bubble(`Connection issue. Tap **Continue**, call ${phone}, or email ${email}.`, "bot");
+      addRecoveryButtons();
+      inFlight = false;
     }
   }
 
