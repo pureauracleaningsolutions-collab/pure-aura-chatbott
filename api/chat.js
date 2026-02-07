@@ -1,16 +1,22 @@
 // api/chat.js
 // ✅ FULL FILE REPLACEMENT — Calendly prefill upgrade (paste once)
-// Includes: crash-proof, anti-spam honeypot, basic rate-limit, dedupe, tags, Google Apps Script webhook, optional Pushover
-// Calendly link: https://calendly.com/management-pureauracleaningsolutions/30min (prefills name + email)
+// Includes: crash-proof, anti-spam honeypot, basic rate-limit, dedupe, tags,
+// Google Apps Script webhook (no Make), optional Pushover notifications.
+//
+// Calendly base:
+// https://calendly.com/management-pureauracleaningsolutions/30min
+//
+// Prefill: adds ?name=...&email=... (and first_name for compatibility)
+// IMPORTANT: Make sure your frontend sends messages[] and hp:"" (blank).
 
 module.exports = async function handler(req, res) {
-  // ---- CORS ----
+  // ---------------- CORS ----------------
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  // ---- In-memory rate limit + dedupe (per serverless instance) ----
+  // ---------------- In-memory rate-limit + dedupe ----------------
   global.__PA_RL = global.__PA_RL || new Map(); // ip -> {count, resetAt}
   global.__PA_DEDUPE = global.__PA_DEDUPE || new Map(); // key -> expireAt
 
@@ -38,13 +44,17 @@ module.exports = async function handler(req, res) {
 
   function dedupeSeen(key) {
     const now = Date.now();
+
+    // small cleanup
     if (global.__PA_DEDUPE.size > 800) {
       for (const [k, exp] of global.__PA_DEDUPE.entries()) {
         if (now > exp) global.__PA_DEDUPE.delete(k);
       }
     }
+
     const exp = global.__PA_DEDUPE.get(key);
     if (exp && now < exp) return true;
+
     global.__PA_DEDUPE.set(key, now + DEDUPE_TTL_MS);
     return false;
   }
@@ -53,23 +63,7 @@ module.exports = async function handler(req, res) {
     return String(p || "").replace(/[^\d]/g, "");
   }
 
-  // ---- Calendly prefill link (Upgrade #1) ----
-  function buildCalendlyLink(lead) {
-    const base = "https://calendly.com/management-pureauracleaningsolutions/30min";
-    const name = (lead?.name || "").toString().trim();
-    const email = (lead?.email || "").toString().trim();
-
-    const params = new URLSearchParams();
-    if (name) params.set("name", name);
-    if (email) params.set("email", email);
-
-    // (Optional) You can pass a note into Calendly via "a1" style params,
-    // but keeping it simple/safe: name + email only.
-    const qs = params.toString();
-    return qs ? `${base}?${qs}` : base;
-  }
-
-  // ---- Time helpers (ET) ----
+  // ---------------- Time helpers (ET) ----------------
   function isBusinessHoursET() {
     try {
       const now = new Date();
@@ -172,6 +166,41 @@ module.exports = async function handler(req, res) {
     return [];
   }
 
+  // ✅ Calendly prefill link (robust: supports multiple field names)
+  function buildCalendlyLink(lead) {
+    const base = "https://calendly.com/management-pureauracleaningsolutions/30min";
+
+    // Pull from multiple possible names to guarantee we get it
+    const nameRaw =
+      (lead?.name ??
+        lead?.full_name ??
+        lead?.contact_name ??
+        lead?.first_name ??
+        lead?.lead_name ??
+        "")
+        .toString()
+        .trim();
+
+    const emailRaw =
+      (lead?.email ?? lead?.email_address ?? lead?.contact_email ?? lead?.lead_email ?? "")
+        .toString()
+        .trim();
+
+    const firstName = nameRaw ? nameRaw.split(" ")[0] : "";
+
+    const params = new URLSearchParams();
+    if (firstName) params.set("first_name", firstName); // extra compatibility
+    if (nameRaw) params.set("name", nameRaw);
+    if (emailRaw) params.set("email", emailRaw);
+
+    const finalUrl = `${base}?${params.toString()}`;
+
+    // Helpful debug — check Vercel logs to confirm it contains name/email
+    console.log("Calendly Prefill URL:", finalUrl);
+
+    return finalUrl;
+  }
+
   function buildProposalDraft(l, bookingLink) {
     const label = serviceLabel(l?.service_type);
     const location = [l?.city, l?.zip].filter(Boolean).join(" ");
@@ -242,8 +271,8 @@ module.exports = async function handler(req, res) {
     return { subject, body: bodyText, scopes, trust };
   }
 
+  // ---------------- MAIN ----------------
   try {
-    // Only POST
     if (req.method !== "POST") {
       return res.status(200).json({ reply: "POST only", lead: {}, quick_replies: [] });
     }
@@ -257,7 +286,7 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // Parse body safely
+    // Safe body parse
     let body = req.body;
     if (typeof body === "string") {
       try {
@@ -268,7 +297,7 @@ module.exports = async function handler(req, res) {
     }
     body = body && typeof body === "object" ? body : {};
 
-    // Anti-spam honeypot (bots fill hidden fields)
+    // Honeypot anti-spam
     const hp = typeof body.hp === "string" ? body.hp.trim() : "";
     if (hp) {
       return res.status(200).json({
@@ -283,9 +312,11 @@ module.exports = async function handler(req, res) {
     const page_title = typeof body.page_title === "string" ? body.page_title : "";
     const page_path = typeof body.page_path === "string" ? body.page_path : "";
 
+    // Your Apps Script webhook
     const APPS_SCRIPT_WEBHOOK_URL =
       "https://script.google.com/macros/s/AKfycbw4Dc2Amr1GxXcYeLJfmUW9MVWF4h_ng8jhJD7rNDt6gfRgo9D4bjnA6KCm8RjxRQrxew/exec";
 
+    // Must have OpenAI key
     if (!process.env.OPENAI_API_KEY) {
       return res.status(200).json({
         reply:
@@ -295,7 +326,7 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // Start if empty
+    // If no messages, start the flow
     if (messages.length === 0) {
       return res.status(200).json({
         reply: "Hi! What type of facility is this: Office, Medical Office, Bank, Property Management, or Other?",
@@ -304,7 +335,7 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // System prompt (must return JSON object)
+    // System prompt: enforce JSON response with lead object
     const system = `
 You are the Pure Aura Cleaning Solutions website assistant.
 Primary goal: capture qualified commercial cleaning leads and then offer a walkthrough booking link.
@@ -330,7 +361,7 @@ Return JSON only:
 `.trim();
 
     // OpenAI call
-    let openai;
+    let openaiJson;
     try {
       const r = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
@@ -352,13 +383,13 @@ Return JSON only:
         }),
       });
 
-      openai = await r.json();
+      openaiJson = await r.json();
 
       if (!r.ok) {
-        const msg = openai?.error?.message || JSON.stringify(openai);
+        const msg = openaiJson?.error?.message || JSON.stringify(openaiJson);
         return res.status(200).json({ reply: `OpenAI error: ${msg}`, lead: {}, quick_replies: [] });
       }
-    } catch {
+    } catch (err) {
       return res.status(200).json({
         reply: "Connection issue. Please try again in a moment.",
         lead: {},
@@ -366,7 +397,7 @@ Return JSON only:
       });
     }
 
-    const outText = openai?.choices?.[0]?.message?.content || "";
+    const outText = openaiJson?.choices?.[0]?.message?.content || "";
     let parsed;
     try {
       parsed = JSON.parse(outText);
@@ -374,7 +405,7 @@ Return JSON only:
       parsed = { reply: outText || "What city and ZIP is the facility in?", lead: {} };
     }
 
-    const lead = parsed.lead || {};
+    const lead = parsed.lead && typeof parsed.lead === "object" ? parsed.lead : {};
     lead.page_url = page_url;
     lead.page_title = page_title;
     lead.page_path = page_path;
@@ -388,6 +419,7 @@ Return JSON only:
       !!lead.service_type &&
       (!!lead.city || !!lead.zip);
 
+    // Default reply + quick replies (continue lead qualification)
     let replyText =
       parsed.reply && typeof parsed.reply === "string"
         ? parsed.reply
@@ -395,23 +427,23 @@ Return JSON only:
 
     let quick_replies = nextQuickReplies(lead);
 
+    // If lead is complete, send to Sheets + notify + give Calendly link
     if (hasMinimum) {
       const duringHours = isBusinessHoursET();
       const urgent = isUrgentLead(lead);
 
-      // ✅ Prefilled Calendly link (name + email)
       const bookingLink = buildCalendlyLink(lead);
-
       const proposal = buildProposalDraft(lead, bookingLink);
 
       const dedupeKey = [
         (lead.email || "").toLowerCase(),
         normalizePhone(lead.phone),
         (lead.service_type || "").toLowerCase(),
-        (lead.zip || "").toString(),
+        String(lead.zip || ""),
       ].join("|");
 
       if (!dedupeSeen(dedupeKey)) {
+        // Send to Apps Script (never crash if it fails)
         try {
           await fetch(APPS_SCRIPT_WEBHOOK_URL, {
             method: "POST",
@@ -428,7 +460,7 @@ Return JSON only:
           console.log("Apps Script webhook error:", String(e));
         }
 
-        // Optional Pushover notifications
+        // Optional Pushover
         const poUser = process.env.PUSHOVER_USER_KEY;
         const poToken = process.env.PUSHOVER_APP_TOKEN;
 
@@ -464,14 +496,16 @@ Return JSON only:
               params.append("url_title", "Open Page");
             }
 
-            await fetch("https://api.pushover.net/1/messages.json", { method: "POST", body: params });
+            await fetch("https://api.pushover.net/1/messages.json", {
+              method: "POST",
+              body: params,
+            });
           } catch (e) {
             console.log("Pushover error:", String(e));
           }
         }
       }
 
-      // Final reply (Calendly link with prefilled name/email)
       replyText =
         `Thanks — we’ve received your information.\n\n` +
         `Next step: a quick walkthrough so we can confirm scope and send a flat-rate proposal within 24 hours.\n\n` +
@@ -486,6 +520,7 @@ Return JSON only:
       quick_replies = ["Book Walkthrough", "Call Now", "Email Me"];
     }
 
+    // Always return valid JSON
     return res.status(200).json({
       reply: replyText,
       lead,
@@ -498,7 +533,8 @@ Return JSON only:
       reply:
         "Quick setup issue on our end. Please call 740-284-8500 or email management@pureauracleaningsolutions.com.",
       lead: {},
-      quick_replies: [],
+      tags: [],
+      quick_replies: ["Call Now", "Email Me"],
     });
   }
 };
