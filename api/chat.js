@@ -12,11 +12,9 @@
 const APPS_SCRIPT_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbxxxAOU39vKNFYU7jo75L3zUB8VhSG3_MvrvKlZWqtEcjBIrZraTnktXWY1OWG7zcgn/exec";
 
+// ✅ FIXED Calendly link (no typo)
 const CALENDLY_BASE =
-  "https://calendly.com/management-pureauraccleaningsolutions/30min"; // <-- keep your real Calendly link here
-// NOTE: If your actual Calendly link is:
-// https://calendly.com/management-pureauracleaningsolutions/30min
-// then replace the line above (typo-proof check).
+  "https://calendly.com/management-pureauracleaningsolutions/30min";
 
 // Service landing pages (your domain)
 const SERVICE_PAGES = {
@@ -128,7 +126,7 @@ module.exports = async function handler(req, res) {
       const params = new URLSearchParams();
       if (lead.name) params.append("name", lead.name);
       if (lead.email) params.append("email", lead.email);
-      params.append("a1", normalizeServiceKey(lead.service_type)); // Calendly custom field slot (optional)
+      params.append("a1", normalizeServiceKey(lead.service_type)); // optional Calendly field
       const calendlyLink = `${CALENDLY_BASE}?${params.toString()}`;
 
       messages.push(
